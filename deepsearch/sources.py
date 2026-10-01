@@ -1,12 +1,15 @@
 """Fetch only a contact's stated company site and GitHub's public user API."""
 import asyncio
+from io import BytesIO
 import ipaddress
 import re
 import socket
 from html.parser import HTMLParser
 from urllib.parse import urlparse
+from urllib.robotparser import RobotFileParser
 
 import httpx
+from pypdf import PdfReader
 
 
 class _Text(HTMLParser):
@@ -59,6 +62,45 @@ async def company_page_text(url: str, company_domain: str | None) -> str | None:
     parser = _Text()
     parser.feed(b"".join(chunks).decode("utf-8", errors="replace"))
     return re.sub(r"\s+", " ", " ".join(parser.parts)).strip()[:12_000]
+
+
+async def company_document_text(url: str, company_domain: str | None) -> str | None:
+    """Read a bounded public PDF on the supplied organization's domain."""
+    if not is_company_url(url, company_domain) or not urlparse(url).path.lower().endswith(".pdf"):
+        return None
+    host = urlparse(url).hostname
+    addresses = await asyncio.get_running_loop().getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+    if not addresses or any(not ipaddress.ip_address(item[4][0]).is_global for item in addresses):
+        return None
+    async with httpx.AsyncClient(timeout=15, follow_redirects=False, trust_env=False) as client:
+        robots_response = await client.get(f"https://{host}/robots.txt", headers={"User-Agent": "DeepWebSearchTools/0.2"})
+        if robots_response.status_code in {403, 429}:
+            return None
+        if robots_response.status_code == 200:
+            robots = RobotFileParser()
+            robots.parse(robots_response.text.splitlines())
+            if not robots.can_fetch("DeepWebSearchTools/0.2", url):
+                return None
+        elif robots_response.status_code != 404:
+            return None
+        async with client.stream("GET", url, headers={"User-Agent": "DeepWebSearchTools/0.2"}) as response:
+            response.raise_for_status()
+            if "application/pdf" not in response.headers.get("content-type", "").lower():
+                return None
+            chunks, size = [], 0
+            async for chunk in response.aiter_bytes():
+                size += len(chunk)
+                if size > 2_500_000:
+                    return None
+                chunks.append(chunk)
+
+    def extract():
+        reader = PdfReader(BytesIO(b"".join(chunks)))
+        return re.sub(r"\s+", " ", " ".join(
+            page.extract_text() or "" for page in reader.pages[:12]
+        )).strip()[:30_000]
+
+    return await asyncio.to_thread(extract)
 
 
 def github_username(url: str) -> str | None:

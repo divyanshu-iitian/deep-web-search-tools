@@ -5,6 +5,8 @@ Evidence-first **public professional identity search** for validating a supplied
 ## What works
 
 - Keyless company-site discovery from public homepage links and sitemaps, respecting `robots.txt` and bounded to ten candidate pages.
+- Name-only candidate search when a broad provider is configured, with explicit `Chaubey`/`Choubey` variants. A name-only result stays `possible` and cannot release an outbound contact.
+- Bounded first-party PDF reading for official faculty CVs and documents. A shortened name can be linked to a surname in a nearby institutional email on the same profile document; that evidence is labeled separately from a full-name match.
 - Self-hosted SearXNG for broader web candidates in Docker, with no commercial search API key; 24-hour local site/page/search cache.
 - Optional Brave Search API adapter for teams that choose a paid provider. Broad search uses at most three queries per contact.
 - GitHub public user API checks for a candidate profile's public name, company and email.
@@ -13,7 +15,7 @@ Evidence-first **public professional identity search** for validating a supplied
 - Source URLs, excerpts, query list, warnings and a local 30-day research log.
 - A fictional offline demo and a browser dashboard.
 
-The status describes **public evidence strength**, not identity authentication. Only a company page plus an independent public GitHub profile can currently produce `corroborated`. A single company page or an indexed post from an institution-listed social account can produce `supported`. The latter is still search-index evidence; a reviewer should open the post before using it for outbound. Unlisted social accounts and generic search snippets stay `possible` at best.
+The status describes **public evidence strength**, not identity authentication. Only a first-party page or document plus an independent public GitHub profile can currently produce `corroborated`. A single first-party page or document, or an indexed post from an institution-listed social account, can produce `supported`. The latter is still search-index evidence; a reviewer should open the post before using it for outbound. Unlisted social accounts and generic search snippets stay `possible` at best.
 
 ## Quick start
 
@@ -50,6 +52,8 @@ flowchart LR
 ```
 
 A full-name match with another company stays unresolved. A search result or profile snippet is only a lead. An institution-linked social post can support an affiliation without a student directory: the institution's own site or document must list the account, and the post URL must identify that account. The crawler reads LinkedIn company and Facebook page links from the institution homepage; account approvals backed by other official documents live in `deepsearch/official_accounts.json`. Instagram `/p/` URLs do not identify the publishing account, so Instagram snippets are shown as candidates only. The tool respects source robots rules and does not fetch blocked social posts directly. A company page or social post could be stale or wrong. A publicly listed work email still does not prove that a mailbox exists or is controlled by the named person. Reports keep uncertainty and provider failures visible; zero results do not mean the person does not exist.
+
+Some official PDFs contain only scanned images and have no extractable text. They stay unverified until OCR or human review. A local run without SearXNG or Brave cannot discover unknown organizations from a name alone. The bundled SearXNG service supplies broad discovery in Docker; its upstream engines may still block or throttle queries.
 
 ## Upstream project review
 

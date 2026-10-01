@@ -4,7 +4,8 @@ import pytest
 from pydantic import ValidationError
 
 from deepsearch.config import Settings
-from deepsearch.engine import SearchEngine, query_plan
+from deepsearch.engine import SearchEngine, company_candidate_rank, query_plan
+from deepsearch.identity import contains_person_name, name_variants, short_name_linked_by_email
 from deepsearch.models import IdentityStatus, SearchHit, SearchRequest
 from deepsearch.official_social import account_from_homepage_link
 from deepsearch.providers import SearchProvider
@@ -36,8 +37,15 @@ def fixture_engine(tmp_path, provider, company_text=None, github_profile=None):
 
 
 def test_input_and_query_budget():
-    with pytest.raises(ValidationError):
-        SearchRequest(name="Rahul Sharma")
+    assert query_plan(SearchRequest(name="Dr. Manoj Kumar Chaubey")) == [
+        '"manoj kumar chaubey"', '"manoj kumar choubey"']
+    assert name_variants("Dr. Manoj Kumar Chaubey") == ["manoj kumar chaubey", "manoj kumar choubey"]
+    with_email = SearchRequest(name="Dr. Manoj Kumar Chaubey", company="GGU",
+                               company_domain="ggu.ac.in", work_email="manoj@ggu.ac.in")
+    assert any("choubey" in query for query in query_plan(with_email))
+    assert any("manoj@ggu.ac.in" in query for query in query_plan(with_email))
+    assert contains_person_name("Dr. Manoj Kumar (Choubey)", "Dr. Manoj Kumar Chaubey")
+    assert not contains_person_name("Prof. Manoj Kumar", "Dr. Manoj Kumar Chaubey")
     with pytest.raises(ValidationError):
         SearchRequest(name="Rahul", company="Example")
     request = SearchRequest(name="Maya Chen", company="Cedar Utilities",
@@ -48,6 +56,60 @@ def test_input_and_query_budget():
     assert not is_company_url("https://cedar.example.org:8443/admin", request.company_domain)
     assert github_username("https://github.com/mayac") == "mayac"
     assert github_username("https://github.com/org/repo") is None
+
+
+def test_official_document_resolves_spelling_variant_without_short_name_false_match(tmp_path):
+    url = "https://ggu.ac.in/media/research/manoj.pdf"
+    provider = FakeProvider([{"provider": "fake", "title": "Dr. Manoj Kumar (Choubey)",
+                             "url": url, "snippet": "Head of IT at Guru Ghasidas Vishwavidyalaya"}])
+
+    async def document(url, domain):
+        return "Dr. Manoj Kumar (Choubey) Head of Department Department of IT Guru Ghasidas Vishwavidyalaya"
+
+    engine = fixture_engine(tmp_path, provider)
+    engine.document_fetcher = document
+    report = asyncio.run(engine.run(SearchRequest(
+        name="Dr. Manoj Kumar Chaubey", company="Guru Ghasidas Vishwavidyalaya",
+        company_domain="ggu.ac.in")))
+    assert report.status == IdentityStatus.supported
+    assert report.evidence[0].category == "official_document"
+    assert "full name on official document" in report.evidence[0].signals
+
+    assert not contains_person_name("Prof. Manoj Kumar Professor at GGU", "Dr. Manoj Kumar Chaubey")
+
+
+def test_short_official_name_requires_nearby_matching_institutional_email(tmp_path):
+    url = "https://ggu.ac.in/media/staff/Manoj_CV.pdf"
+    name = "Dr. Manoj Kumar Chaubey"
+    page = ("Prof (Dr.) Manoj Kumar Professor and Head, Department of IT "
+            "Guru Ghasidas Vishwavidyalaya choubey.manoj@ggu.ac.in")
+    assert short_name_linked_by_email(page, name, "ggu.ac.in", url)
+    assert not short_name_linked_by_email(page.replace("choubey.manoj@ggu.ac.in", "other@ggu.ac.in"),
+                                          name, "ggu.ac.in", url)
+    assert not short_name_linked_by_email(page, name, "other.ac.in", url)
+    assert not short_name_linked_by_email(page, "Dr. Manoj Kumar Sharma", "ggu.ac.in", url)
+
+
+def test_name_only_returns_candidates_without_claiming_identity(tmp_path):
+    provider = FakeProvider([{
+        "provider": "fake", "title": "Dr. Manoj Kumar (Choubey) at GGV",
+        "url": "https://example.org/profile", "snippet": "Guru Ghasidas Vishwavidyalaya"
+    }])
+    report = asyncio.run(fixture_engine(tmp_path, provider).run(
+        SearchRequest(name="Dr. Manoj Kumar Chaubey")))
+    assert report.status == IdentityStatus.possible
+    assert report.evidence[0].category == "search_result"
+    assert "disambiguate" in report.explanation
+
+
+def test_person_profile_ranks_above_generic_company_news():
+    generic = SearchHit(provider="fake", query="q", title="News",
+                        url="https://ggu.ac.in/news/innovation", snippet="Manoj Kumar")
+    profile = SearchHit(provider="fake", query="q", title="Faculty",
+                        url="https://ggu.ac.in/department/it/faculty/prof-manoj-kumar/",
+                        snippet="Professor")
+    assert company_candidate_rank(profile, "Dr. Manoj Kumar Chaubey") > company_candidate_rank(
+        generic, "Dr. Manoj Kumar Chaubey")
 
 
 def test_company_page_and_independent_profile_corroborate(tmp_path):

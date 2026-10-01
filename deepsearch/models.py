@@ -43,8 +43,6 @@ class SearchRequest(BaseModel):
 
     @model_validator(mode="after")
     def enough_context(self):
-        if not (self.company or self.company_domain or self.work_email):
-            raise ValueError("Add company, company domain, or work email to disambiguate the person")
         if len(self.name.split()) < 2:
             raise ValueError("Use the person's full name")
         return self
