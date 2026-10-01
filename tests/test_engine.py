@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from deepsearch.config import Settings
 from deepsearch.engine import SearchEngine, query_plan
 from deepsearch.models import IdentityStatus, SearchHit, SearchRequest
+from deepsearch.official_social import account_from_homepage_link
 from deepsearch.providers import SearchProvider
 from deepsearch.sources import github_username, is_company_url
 from deepsearch.storage import Storage
@@ -82,6 +83,79 @@ def test_same_name_at_wrong_company_does_not_verify(tmp_path):
     report = asyncio.run(engine.run(SearchRequest(name="Maya Chen", company="Cedar Utilities")))
     assert report.status == IdentityStatus.unresolved
     assert report.evidence[0].score < 55
+
+
+def test_unrelated_results_are_not_presented_as_person_evidence(tmp_path):
+    provider = FakeProvider([
+        {"provider": "fake", "title": "An unrelated faculty page",
+         "url": "https://unrelated.example.org/team", "snippet": "IIT Madras faculty listing"}
+    ])
+    report = asyncio.run(fixture_engine(tmp_path, provider).run(
+        SearchRequest(name="Divyanshu Mishra", company="IIT Madras")))
+    assert report.status == IdentityStatus.unresolved
+    assert not report.evidence
+
+
+def test_institution_listed_social_post_supports_affiliation(tmp_path):
+    post = "https://www.linkedin.com/posts/iit-madras-bs-datascience-programme_iitmadras-activity-123"
+    provider = FakeProvider([{
+        "provider": "fake", "title": "IIT Madras BS in Data Science Programme",
+        "url": post,
+        "snippet": "IIT Madras BS student Divyanshu Mishra was selected at DFKI."
+    }])
+    report = asyncio.run(fixture_engine(tmp_path, provider).run(SearchRequest(
+        name="Divyanshu Mishra", company="IIT Madras", company_domain="iitm.ac.in")))
+    assert report.status == IdentityStatus.supported
+    assert report.evidence[0].category == "official_social_post_indexed"
+    assert report.evidence[0].authority_url.endswith("bs-degree-brochure.pdf")
+    assert "search-index evidence" in report.explanation
+
+
+def test_unlisted_social_account_cannot_confirm_institution(tmp_path):
+    provider = FakeProvider([{
+        "provider": "fake", "title": "A social post",
+        "url": "https://www.linkedin.com/posts/unrelated_account-activity-123",
+        "snippet": "Divyanshu Mishra IIT Madras"
+    }])
+    report = asyncio.run(fixture_engine(tmp_path, provider).run(SearchRequest(
+        name="Divyanshu Mishra", company="IIT Madras", company_domain="iitm.ac.in")))
+    assert report.status == IdentityStatus.possible
+    assert report.evidence[0].category == "search_result"
+
+
+def test_institution_post_without_affiliation_context_stays_possible(tmp_path):
+    provider = FakeProvider([{
+        "provider": "fake", "title": "IIT Madras BS in Data Science Programme",
+        "url": "https://www.linkedin.com/posts/iit-madras-bs-datascience-programme_event-activity-123",
+        "snippet": "Guest speaker Divyanshu Mishra answered questions at an event."
+    }])
+    report = asyncio.run(fixture_engine(tmp_path, provider).run(SearchRequest(
+        name="Divyanshu Mishra", company="IIT Madras", company_domain="iitm.ac.in")))
+    assert report.status == IdentityStatus.possible
+    assert report.evidence[0].category == "search_result"
+
+
+def test_institution_homepage_link_can_attribute_social_post(tmp_path):
+    account = account_from_homepage_link(
+        "https://www.linkedin.com/company/cedar-university/", "cedar.example.org",
+        "https://cedar.example.org/")
+    assert account is not None
+    assert account_from_homepage_link("https://www.linkedin.com/in/a-person/",
+                                      "cedar.example.org", "https://cedar.example.org/") is None
+    provider = FakeProvider([{
+        "provider": "fake", "title": "Cedar University update",
+        "url": "https://www.linkedin.com/posts/cedar-university_maya-chen-activity-123",
+        "snippet": "Maya Chen joined Cedar University as a researcher."
+    }])
+    engine = fixture_engine(tmp_path, provider)
+    engine.storage.save_value("site-index:cedar.example.org", {
+        "base": "https://cedar.example.org", "urls": [], "robots": "",
+        "social_accounts": [account.model_dump(mode="json")],
+    }, 24)
+    report = asyncio.run(engine.run(SearchRequest(name="Maya Chen", company="Cedar University",
+                                                  company_domain="cedar.example.org")))
+    assert report.status == IdentityStatus.supported
+    assert report.evidence[0].authority_url == "https://cedar.example.org/"
 
 
 def test_demo_is_explicit_and_fictional(tmp_path):

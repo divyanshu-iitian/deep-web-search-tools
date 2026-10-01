@@ -12,6 +12,7 @@ import httpx
 
 from deepsearch.identity import contains_phrase
 from deepsearch.models import SearchHit
+from deepsearch.official_social import account_from_homepage_link
 from deepsearch.sources import is_company_url
 from deepsearch.storage import Storage
 
@@ -120,6 +121,11 @@ async def discover_company_pages(name: str, domain: str | None, storage: Storage
                 return [], {}, ["Company robots.txt disallows this crawler."]
             page = _Page()
             page.feed(homepage)
+            social_accounts = []
+            for href in page.links:
+                account = account_from_homepage_link(urljoin(base + "/", href), domain, base)
+                if account:
+                    social_accounts.append(account.model_dump(mode="json"))
             candidates = [base]
             candidates.extend(urljoin(base + "/", href) for href in page.links)
             sitemaps = re.findall(r"(?im)^sitemap:\s*(\S+)", robots_text)[:3]
@@ -153,7 +159,8 @@ async def discover_company_pages(name: str, domain: str | None, storage: Storage
             candidates = list(dict.fromkeys(url.split("#", 1)[0] for url in candidates
                                             if _candidate(url, domain)))[:1500]
             storage.save_value(f"site-index:{domain}", {"base": base, "urls": candidates,
-                                                         "robots": robots_text}, 24)
+                                                         "robots": robots_text,
+                                                         "social_accounts": social_accounts}, 24)
 
         robots = RobotFileParser()
         robots.parse(robots_text.splitlines())

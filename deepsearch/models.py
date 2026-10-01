@@ -77,6 +77,8 @@ class Evidence(BaseModel):
     signals: list[str]
     score: int
     category: str
+    authority_url: str | None = None
+    authority_domain: str | None = None
 
 
 class IdentityStatus(StrEnum):

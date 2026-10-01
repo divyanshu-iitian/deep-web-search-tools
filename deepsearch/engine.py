@@ -8,6 +8,7 @@ from deepsearch.config import Settings
 from deepsearch.company_discovery import discover_company_pages
 from deepsearch.identity import canonical_url, evaluate_hit, resolve_status
 from deepsearch.models import IdentityReport, SearchHit, SearchRequest
+from deepsearch.official_social import OfficialAccount
 from deepsearch.providers import BraveSearchProvider, DemoProvider, SearchProvider, SearxngProvider
 from deepsearch.sources import company_page_text, github_public_profile, github_username, is_company_url
 from deepsearch.storage import Storage
@@ -121,15 +122,18 @@ class SearchEngine:
                     self.storage.save_value(f"github-profile:{url}", profiles[url], 24)
             except Exception as exc:
                 warnings.append(f"GitHub profile could not be checked ({type(exc).__name__}).")
+        site_index = self.storage.cached_value(f"site-index:{request.company_domain}") if request.company_domain else None
+        social_accounts = [OfficialAccount.model_validate(item) for item in (site_index or {}).get("social_accounts", [])]
+        evaluated = [evaluate_hit(request, hit, pages.get(hit.url), profiles.get(hit.url), social_accounts) for hit in hits]
         evidence = sorted(
-            [evaluate_hit(request, hit, pages.get(hit.url), profiles.get(hit.url)) for hit in hits],
+            (item for item in evaluated if any(signal.startswith("full name ") for signal in item.signals)),
             key=lambda item: item.score, reverse=True,
         )
         status, explanation = resolve_status(evidence)
         if request.work_email and not any("exact work email publicly listed" in item.signals for item in evidence):
             warnings.append("Work email was not publicly confirmed; mailbox ownership and deliverability are untested.")
-        if not hits and not warnings:
-            warnings.append("Search returned no results; this does not prove the person does not exist.")
+        if not evidence and not warnings:
+            warnings.append("No result named this person; this does not prove the person does not exist.")
         report = IdentityReport(
             run_id=str(uuid4()), name=request.name, company=request.company,
             company_domain=request.company_domain, work_email=request.work_email,

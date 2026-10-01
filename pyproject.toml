@@ -21,7 +21,7 @@ build-backend = "setuptools.build_meta"
 include = ["deepsearch*"]
 
 [tool.setuptools.package-data]
-deepsearch = ["static/*"]
+deepsearch = ["static/*", "official_accounts.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

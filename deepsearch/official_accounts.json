@@ -1,0 +1,18 @@
+[
+  {
+    "domain": "iitm.ac.in",
+    "platform": "linkedin",
+    "handle": "iit-madras-bs-datascience-programme",
+    "account_url": "https://www.linkedin.com/company/iit-madras-bs-datascience-programme/",
+    "proof_url": "https://code.iitm.ac.in/schoolconnect/docs/bs-degree-brochure.pdf",
+    "proof_note": "IIT Madras BS common brochure, page 16, lists IIT Madras BS in Data Science Programme as its LinkedIn account."
+  },
+  {
+    "domain": "iitm.ac.in",
+    "platform": "facebook",
+    "handle": "iitmadrasbsdegree",
+    "account_url": "https://www.facebook.com/iitmadrasbsdegree/",
+    "proof_url": "https://code.iitm.ac.in/schoolconnect/docs/bs-degree-brochure.pdf",
+    "proof_note": "IIT Madras BS common brochure, page 16, lists @iitmadrasbsdegree as its Facebook account."
+  }
+]

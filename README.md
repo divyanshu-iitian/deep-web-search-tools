@@ -8,11 +8,12 @@ Evidence-first **public professional identity search** for validating a supplied
 - Self-hosted SearXNG for broader web candidates in Docker, with no commercial search API key; 24-hour local site/page/search cache.
 - Optional Brave Search API adapter for teams that choose a paid provider. Broad search uses at most three queries per contact.
 - GitHub public user API checks for a candidate profile's public name, company and email.
+- Institution-listed LinkedIn and Facebook accounts can support a match when an indexed post names the person. Each account has a reviewed proof URL on the institution's own domain.
 - Deterministic evidence score and one of four statuses: `corroborated`, `supported`, `possible`, `unresolved`.
 - Source URLs, excerpts, query list, warnings and a local 30-day research log.
 - A fictional offline demo and a browser dashboard.
 
-The status describes **public evidence strength**, not identity authentication. Only a company page plus an independent public GitHub profile can currently produce `corroborated`. A single company page can produce `supported`. Search snippets alone cannot produce either.
+The status describes **public evidence strength**, not identity authentication. Only a company page plus an independent public GitHub profile can currently produce `corroborated`. A single company page or an indexed post from an institution-listed social account can produce `supported`. The latter is still search-index evidence; a reviewer should open the post before using it for outbound. Unlisted social accounts and generic search snippets stay `possible` at best.
 
 ## Quick start
 
@@ -48,7 +49,7 @@ flowchart LR
   F --> G[Conservative status + human review]
 ```
 
-A full-name match with another company stays unresolved. A search result or profile snippet is only a lead. A company page supports a professional association, but could be stale or wrong. A publicly listed work email still does not prove that a mailbox exists or is controlled by the named person. Reports keep uncertainty and provider failures visible; zero results do not mean the person does not exist.
+A full-name match with another company stays unresolved. A search result or profile snippet is only a lead. An institution-linked social post can support an affiliation without a student directory: the institution's own site or document must list the account, and the post URL must identify that account. The crawler reads LinkedIn company and Facebook page links from the institution homepage; account approvals backed by other official documents live in `deepsearch/official_accounts.json`. Instagram `/p/` URLs do not identify the publishing account, so Instagram snippets are shown as candidates only. The tool respects source robots rules and does not fetch blocked social posts directly. A company page or social post could be stale or wrong. A publicly listed work email still does not prove that a mailbox exists or is controlled by the named person. Reports keep uncertainty and provider failures visible; zero results do not mean the person does not exist.
 
 ## Upstream project review
 
