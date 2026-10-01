@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Deep Web Search Tools</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="mark">D<span>W</span></div>
+      <div><p class="eyebrow">EVIDENCE FIRST SEARCH</p><h1>Deep Web Search Tools</h1>
+        <p class="sub">Public professional identity research, with the uncertainty left visible.</p></div>
+      <div class="header-status" id="provider-status">Checking provider…</div>
+    </header>
+    <main>
+      <section class="panel search-panel">
+        <div class="section-head"><div><p class="eyebrow">01 / SEARCH</p><h2>Find the right person</h2></div><button id="demo" class="ghost" type="button">Try fictional demo</button></div>
+        <form id="search-form">
+          <div class="form-grid">
+            <label>Full name <span>required</span><input id="name" required minlength="3" placeholder="Maya Chen"></label>
+            <label>Company <input id="company" placeholder="Cedar Utilities"></label>
+            <label>Company domain <input id="domain" placeholder="cedar.example.org"></label>
+            <label>Work email <input id="email" type="email" placeholder="maya@cedar.example.org"></label>
+          </div>
+          <div class="form-footer"><p>Provide company, domain, or email to distinguish people with the same name.</p><button id="submit" type="submit">Search public sources <span>↗</span></button></div>
+        </form>
+      </section>
+      <section class="workspace">
+        <div class="results">
+          <div class="section-head"><div><p class="eyebrow">02 / ASSESSMENT</p><h2>Identity assessment</h2></div><span id="result-count" class="count">No run</span></div>
+          <div id="message" class="notice">Enter a contact and run a search. A search hit is only a lead; company pages and independent context carry more weight.</div>
+          <div id="report" aria-live="polite"></div>
+        </div>
+        <aside class="panel history"><p class="eyebrow">RECENT RUNS</p><h2>Research log</h2><div id="history-list"></div>
+          <p class="fine">Local reports expire after 30 days on the next search. Delete a run any time.</p></aside>
+      </section>
+    </main>
+    <footer>Public professional sources only · No private-account access · No claim of identity authentication</footer>
+  </div>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
