@@ -1,4 +1,10 @@
 services:
+  searxng:
+    image: searxng/searxng:latest
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    ports:
+      - "127.0.0.1:8080:8080"
   search:
     build: .
     env_file: .env
@@ -8,6 +14,10 @@ services:
       - search_data:/app/data
     environment:
       DATA_DIR: /app/data
+      SEARCH_PROVIDER: auto
+      SEARXNG_URL: http://searxng:8080
+    depends_on:
+      - searxng
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8088/api/health')"]
       interval: 10s

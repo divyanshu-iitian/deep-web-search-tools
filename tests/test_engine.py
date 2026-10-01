@@ -28,7 +28,10 @@ def fixture_engine(tmp_path, provider, company_text=None, github_profile=None):
     async def github(url, token):
         return github_profile
 
-    return SearchEngine(Settings(data_dir=str(tmp_path)), Storage(str(tmp_path)), provider, page, github)
+    async def discover(name, domain, storage):
+        return [], {}, []
+
+    return SearchEngine(Settings(data_dir=str(tmp_path)), Storage(str(tmp_path)), provider, page, github, discover)
 
 
 def test_input_and_query_budget():
@@ -41,6 +44,7 @@ def test_input_and_query_budget():
     assert len(query_plan(request)) == 3
     assert is_company_url("https://team.cedar.example.org/maya", request.company_domain)
     assert not is_company_url("https://cedar.example.org.evil.test/maya", request.company_domain)
+    assert not is_company_url("https://cedar.example.org:8443/admin", request.company_domain)
     assert github_username("https://github.com/mayac") == "mayac"
     assert github_username("https://github.com/org/repo") is None
 

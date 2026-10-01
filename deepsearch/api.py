@@ -29,9 +29,12 @@ def dashboard():
 
 @app.get("/api/health")
 def health():
+    broad = bool(settings.brave_search_api_key if settings.search_provider == "brave"
+                 else settings.searxng_url)
     return {"status": "ok", "provider": settings.search_provider,
-            "configured": bool(settings.brave_search_api_key if settings.search_provider == "brave"
-                               else settings.searxng_url)}
+            "configured": True, "keyless_company_search": True, "broad_search_configured": broad,
+            "broad_provider": "searxng" if settings.search_provider == "auto" and settings.searxng_url
+                              else settings.search_provider if broad else None}
 
 
 @app.post("/api/search", response_model=IdentityReport, dependencies=[Depends(authorize)])

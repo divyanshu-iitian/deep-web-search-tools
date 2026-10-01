@@ -41,6 +41,18 @@ class Storage:
             db.execute("INSERT OR REPLACE INTO cache VALUES (?,?,?)",
                        (key, json.dumps([hit.model_dump(mode="json") for hit in hits]), expiry.isoformat()))
 
+    def cached_value(self, key: str):
+        with self._connect() as db:
+            row = db.execute("SELECT payload, expires_at FROM cache WHERE cache_key=?", (key,)).fetchone()
+        if not row or datetime.fromisoformat(row[1]) <= datetime.now(timezone.utc):
+            return None
+        return json.loads(row[0])
+
+    def save_value(self, key: str, value, hours: int):
+        expiry = datetime.now(timezone.utc) + timedelta(hours=hours)
+        with self._connect() as db:
+            db.execute("INSERT OR REPLACE INTO cache VALUES (?,?,?)", (key, json.dumps(value), expiry.isoformat()))
+
     def save_report(self, report: IdentityReport):
         with self._connect() as db:
             db.execute("INSERT INTO runs VALUES (?,?,?)",

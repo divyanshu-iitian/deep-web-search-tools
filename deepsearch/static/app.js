@@ -94,7 +94,7 @@ $('demo').addEventListener('click', () => {
   void runSearch(null, true);
 });
 request('/api/health').then(data => {
-  $('provider-status').textContent = data.configured ?
-    `${data.provider.toUpperCase()} CONNECTED` : 'LIVE SEARCH NEEDS A KEY';
+  $('provider-status').textContent = data.broad_search_configured ?
+    `COMPANY + ${data.broad_provider.toUpperCase()} SEARCH` : 'KEYLESS COMPANY SEARCH';
 }).catch(() => {$('provider-status').textContent = 'PROVIDER OFFLINE';});
 loadHistory().catch(() => {});

@@ -49,6 +49,8 @@ class SearxngProvider(SearchProvider):
             )
             response.raise_for_status()
             data = response.json()
+        if not data.get("results") and data.get("unresponsive_engines"):
+            raise RuntimeError("SearXNG upstream engines were unavailable")
         return _hits("searxng", query, data.get("results", [])[:limit], "content")
 
 

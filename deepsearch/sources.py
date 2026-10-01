@@ -34,7 +34,8 @@ def is_company_url(url: str, company_domain: str | None) -> bool:
     parsed = urlparse(url)
     host = (parsed.hostname or "").lower()
     domain = company_domain.lower().removeprefix("www.")
-    return parsed.scheme == "https" and (host == domain or host.endswith("." + domain))
+    return (parsed.scheme == "https" and not parsed.username and not parsed.password and
+            parsed.port in (None, 443) and (host == domain or host.endswith("." + domain)))
 
 
 async def company_page_text(url: str, company_domain: str | None) -> str | None:
