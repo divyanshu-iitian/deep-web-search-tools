@@ -60,6 +60,21 @@ def canonical_url(url: str) -> str:
     return urlunparse((parsed.scheme, parsed.netloc.lower(), parsed.path.rstrip("/"), "", "", ""))
 
 
+def relevant_excerpt(page: str, name: str, work_email: str | None) -> str:
+    """Show the matched person's context instead of the page header."""
+    text = re.sub(r"\s+", " ", page).strip()
+    match = re.search(re.escape(name), text, flags=re.I)
+    if not match:
+        return text[:1000]
+    start = max(0, match.start() - 40)
+    excerpt = text[start:match.end() + 520].strip()
+    if work_email and work_email.casefold() not in excerpt.casefold():
+        email_match = re.search(re.escape(work_email), text, flags=re.I)
+        if email_match:
+            excerpt += " ... " + text[max(0, email_match.start() - 55):email_match.end() + 80].strip()
+    return excerpt[:1000]
+
+
 def evaluate_hit(
     request: SearchRequest, hit: SearchHit,
     company_page: str | None = None, github_profile: dict | None = None,
@@ -107,7 +122,7 @@ def evaluate_hit(
     if not (name_in_result or name_in_page or name_in_github or linked_short_name):
         score = min(score, 20)
     if company_page and official:
-        category, excerpt = ("official_document" if is_document else "company_page"), page[:1000]
+        category, excerpt = ("official_document" if is_document else "company_page"), relevant_excerpt(page, request.name, request.work_email)
     elif github_profile:
         category, excerpt = "github_public_profile", github[:1000]
     elif social_context_match:

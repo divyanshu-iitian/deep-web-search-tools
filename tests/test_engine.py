@@ -228,3 +228,18 @@ def test_demo_is_explicit_and_fictional(tmp_path):
     assert report.status == IdentityStatus.corroborated
     with pytest.raises(ValueError):
         asyncio.run(engine.run(SearchRequest(name="Rahul Sharma", company="Example", demo=True)))
+
+
+def test_relevant_excerpt_uses_matched_person_and_public_email():
+    from deepsearch.identity import relevant_excerpt
+
+    page = "Company navigation " * 90 + (
+        "Partner Programme Manager Joanne Lyons has channel experience. "
+        + "Biography text " * 50
+        + "joannelyons@fullpowerutilities.com is the published contact."
+    )
+    excerpt = relevant_excerpt(page, "Joanne Lyons", "joannelyons@fullpowerutilities.com")
+    assert "Joanne Lyons" in excerpt
+    assert "Partner Programme Manager" in excerpt
+    assert "joannelyons@fullpowerutilities.com" in excerpt
+    assert not excerpt.startswith("Company navigation")
