@@ -20,6 +20,7 @@ from deepsearch.storage import Storage
 USER_AGENT = "DeepWebSearchTools/0.2 (+public professional research)"
 PAGE_LIMIT = 10
 BYTE_LIMIT = 650_000
+TEXT_LIMIT = 80_000
 PATH_HINTS = ("team", "people", "leadership", "about", "staff", "bio", "profile", "board")
 
 
@@ -45,6 +46,12 @@ class _Page(HTMLParser):
     def handle_data(self, data):
         if not self.hidden:
             self.text.append(data)
+
+
+def page_text(html: str) -> str:
+    page = _Page()
+    page.feed(html)
+    return re.sub(r"\s+", " ", " ".join(page.text)).strip()[:TEXT_LIMIT]
 
 
 async def _get(client: httpx.AsyncClient, url: str, domain: str) -> tuple[int, str]:
@@ -172,7 +179,7 @@ async def discover_company_pages(name: str, domain: str | None, storage: Storage
         for url in ranked[:page_limit]:
             if not robots.can_fetch(USER_AGENT, url):
                 continue
-            cache_key = f"site-page:{url}"
+            cache_key = f"site-page-v2:{url}"
             body = storage.cached_value(cache_key)
             if body is None:
                 try:
@@ -182,9 +189,7 @@ async def discover_company_pages(name: str, domain: str | None, storage: Storage
                         break
                     if status != 200 or not html:
                         continue
-                    page = _Page()
-                    page.feed(html)
-                    body = re.sub(r"\s+", " ", " ".join(page.text)).strip()[:30_000]
+                    body = page_text(html)
                     storage.save_value(cache_key, body, 24)
                 except (httpx.HTTPError, OSError, ValueError):
                     warnings.append("A candidate company page could not be checked.")

@@ -14,6 +14,7 @@ class SearchRequest(BaseModel):
     company: str | None = Field(default=None, max_length=160)
     company_domain: str | None = Field(default=None, max_length=255)
     work_email: str | None = Field(default=None, max_length=320)
+    source_url: str | None = Field(default=None, max_length=2000)
     demo: bool = False
 
     @field_validator("name", "company", mode="before")

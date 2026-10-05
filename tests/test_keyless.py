@@ -7,6 +7,16 @@ from deepsearch.models import IdentityStatus, SearchRequest
 from deepsearch.storage import Storage
 
 
+def test_long_public_team_page_keeps_late_person_match():
+    html = "<html><body>" + ("Earlier team member. " * 1800) + (
+        "<h3>Partner Programme Manager</h3><h4>Joanne Lyons</h4>"
+        "<a href='mailto:joannelyons@fullpowerutilities.com'>Email me</a>"
+    ) + "</body></html>"
+    text = company_discovery.page_text(html)
+    assert len(text) > 30_000
+    assert "Joanne Lyons" in text
+
+
 def test_keyless_company_sitemap_supports_identity(tmp_path, monkeypatch):
     pages = {
         "https://cedar.example.org": (200, '<a href="/about">About</a>'),

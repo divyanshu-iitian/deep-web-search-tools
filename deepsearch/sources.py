@@ -61,7 +61,7 @@ async def company_page_text(url: str, company_domain: str | None) -> str | None:
                 chunks.append(chunk)
     parser = _Text()
     parser.feed(b"".join(chunks).decode("utf-8", errors="replace"))
-    return re.sub(r"\s+", " ", " ".join(parser.parts)).strip()[:12_000]
+    return re.sub(r"\s+", " ", " ".join(parser.parts)).strip()[:80_000]
 
 
 async def company_document_text(url: str, company_domain: str | None) -> str | None:

@@ -243,3 +243,15 @@ def test_relevant_excerpt_uses_matched_person_and_public_email():
     assert "Partner Programme Manager" in excerpt
     assert "joannelyons@fullpowerutilities.com" in excerpt
     assert not excerpt.startswith("Company navigation")
+
+
+def test_supplied_company_source_is_checked_even_when_discovery_misses_it(tmp_path):
+    source = "https://cedar.example.org/our-team/"
+    engine = fixture_engine(tmp_path, None,
+                            company_text="Partner Manager Maya Chen works at Cedar Utilities. maya@cedar.example.org")
+    report = asyncio.run(engine.run(SearchRequest(
+        name="Maya Chen", company="Cedar Utilities", company_domain="cedar.example.org",
+        work_email="maya@cedar.example.org", source_url=source)))
+    assert report.status == IdentityStatus.supported
+    assert any(item.url == source.rstrip("/") and "full name on company page" in item.signals
+               for item in report.evidence)
