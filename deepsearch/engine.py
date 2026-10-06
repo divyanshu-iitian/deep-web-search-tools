@@ -117,9 +117,12 @@ class SearchEngine:
             if is_company_url(request.source_url, request.company_domain):
                 try:
                     is_document = request.source_url.lower().split("?", 1)[0].endswith(".pdf")
-                    source_text = await (self.document_fetcher(request.source_url, request.company_domain)
-                                         if is_document else
-                                         self.company_fetcher(request.source_url, request.company_domain))
+                    cache_key = f"public-page:{request.source_url}"
+                    cached = self.storage.cached_value(cache_key)
+                    source_text = cached.get("text") if cached else await (self.document_fetcher(request.source_url, request.company_domain)
+                                         if is_document else self.company_fetcher(request.source_url, request.company_domain))
+                    if source_text and not cached:
+                        self.storage.save_value(cache_key, {"text": source_text}, 6)
                     if source_text and contains_person_name(source_text, request.name):
                         hit = SearchHit(provider="supplied_company_page", query="supplied public source",
                                         title=f"Supplied company source: {request.source_url}",
@@ -134,8 +137,9 @@ class SearchEngine:
                 warnings.append("Supplied source is outside the stated company domain; it was not treated as company evidence.")
         if not request.demo and request.company_domain:
             try:
-                company_hits, pages, discovery_warnings = await self.company_discoverer(
+                company_hits, discovered_pages, discovery_warnings = await self.company_discoverer(
                     request.name, request.company_domain, self.storage)
+                pages.update(discovered_pages)
                 warnings.extend(discovery_warnings)
                 queries.append(f"{request.name} on {request.company_domain} (first-party crawl)")
                 for hit in company_hits:

@@ -63,7 +63,8 @@ def canonical_url(url: str) -> str:
 def relevant_excerpt(page: str, name: str, work_email: str | None) -> str:
     """Show the matched person's context instead of the page header."""
     text = re.sub(r"\s+", " ", page).strip()
-    match = re.search(re.escape(name), text, flags=re.I)
+    match = next((found for variant in name_variants(name)
+                  if (found := re.search(re.escape(variant), text, flags=re.I))), None)
     if not match:
         return text[:1000]
     start = max(0, match.start() - 40)
@@ -102,6 +103,13 @@ def evaluate_hit(
                        (request.work_email in summary.casefold() or
                         request.work_email in page.casefold() or
                         request.work_email == str((github_profile or {}).get("email") or "").casefold()))
+    if exact_email and page and name_in_page:
+        # On team directories, another person's email must not validate this identity.
+        named_windows = []
+        for variant in name_variants(request.name):
+            for match in re.finditer(re.escape(variant), page, flags=re.I):
+                named_windows.append(page[max(0, match.start()-150):match.end()+600].casefold())
+        exact_email = any(request.work_email.casefold() in window for window in named_windows)
     signals = []
     if name_in_result: signals.append("full name in search result")
     is_document = urlparse(hit.url).path.lower().endswith(".pdf")

@@ -4,6 +4,10 @@ Evidence-first **public professional identity search** for validating a supplied
 
 ## What works
 
+- Supplied public profile text is retained when company discovery adds or finds no other pages, with a six-hour supplied-page cache.
+- A directory email must appear near the named person before it is labeled an exact public work-email match.
+- The outbound engine consumes professional source excerpts rather than inventing interests from search snippets.
+
 - Keyless company-site discovery from public homepage links and sitemaps, respecting `robots.txt` and bounded to ten candidate pages.
 - Name-only candidate search when a broad provider is configured, with explicit `Chaubey`/`Choubey` variants. A name-only result stays `possible` and cannot release an outbound contact.
 - Bounded first-party PDF reading for official faculty CVs and documents. A shortened name can be linked to a surname in a nearby institutional email on the same profile document; that evidence is labeled separately from a full-name match.
