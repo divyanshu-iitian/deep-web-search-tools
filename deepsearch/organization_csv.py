@@ -50,7 +50,7 @@ async def enrich(input_path,output_path,start=None,end=None):
             if result:
                 row.update(discovery_status=result['status'],discovery_warnings='; '.join(result.get('warnings',[])),website=result.get('website',''),contact_candidates=len(result['contacts']))
                 for key in ('contact_name','contact_title','contact_email','email_source','verification_tool','verification_status','phone','linkedin_url'):row[key]=''
-                best=next((x for x in result['contacts'] if x.get('name')),None)
+                best=next((x for x in result['contacts'] if x.get('name') and x.get('identity_status')=='supported' and x.get('relevance_score',0)>=50),None)
                 if best:row.update(contact_name=best['name'],contact_title=best['title'],contact_email=best['email'],email_source=best['source_url'],background=best['background'],phone=best.get('phone',''),linkedin_url=best.get('linkedin_url',''))
                 row['verification_status']='NOT_CHECKED'  # The standalone tool has no mailbox verifier.
                 for key,fact in result.get('facts',{}).items():
