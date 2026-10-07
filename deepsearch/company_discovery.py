@@ -21,7 +21,7 @@ USER_AGENT = "DeepWebSearchTools/0.2 (+public professional research)"
 PAGE_LIMIT = 10
 BYTE_LIMIT = 650_000
 TEXT_LIMIT = 80_000
-PATH_HINTS = ("team", "people", "leadership", "about", "staff", "bio", "profile", "board")
+PATH_HINTS = ("team", "people", "leadership", "about", "staff", "bio", "profile", "board", "contact", "directory", "management", "utility", "department")
 
 
 class _Page(HTMLParser):
@@ -54,7 +54,7 @@ def page_text(html: str) -> str:
     return re.sub(r"\s+", " ", " ".join(page.text)).strip()[:TEXT_LIMIT]
 
 
-async def _get(client: httpx.AsyncClient, url: str, domain: str) -> tuple[int, str]:
+async def _get(client: httpx.AsyncClient, url: str, domain: str, redirects: int = 0) -> tuple[int, str]:
     if not is_company_url(url, domain):
         raise ValueError("URL is outside supplied company domain")
     host = urlparse(url).hostname
@@ -62,6 +62,11 @@ async def _get(client: httpx.AsyncClient, url: str, domain: str) -> tuple[int, s
     if not addresses or any(not ipaddress.ip_address(item[4][0]).is_global for item in addresses):
         raise ValueError("Company host must resolve only to public IP addresses")
     async with client.stream("GET", url, headers={"User-Agent": USER_AGENT}) as response:
+        if response.status_code in {301, 302, 303, 307, 308}:
+            if redirects >= 3:
+                raise ValueError("Company redirect limit exceeded")
+            target = urljoin(url, response.headers.get("location", ""))
+            return await _get(client, target, domain, redirects + 1)
         if response.status_code in {403, 404, 410, 429}:
             return response.status_code, ""
         response.raise_for_status()
@@ -181,7 +186,7 @@ async def discover_company_pages(name: str, domain: str | None, storage: Storage
                 continue
             cache_key = f"site-page-v2:{url}"
             body = storage.cached_value(cache_key)
-            if body is None:
+            if body is None or (not name and storage.cached_value(f"site-html-v1:{url}") is None):
                 try:
                     status, html = await _get(client, url, domain)
                     if status == 429:
@@ -190,11 +195,12 @@ async def discover_company_pages(name: str, domain: str | None, storage: Storage
                     if status != 200 or not html:
                         continue
                     body = page_text(html)
+                    storage.save_value(f"site-html-v1:{url}", html, 24)
                     storage.save_value(cache_key, body, 24)
                 except (httpx.HTTPError, OSError, ValueError):
                     warnings.append("A candidate company page could not be checked.")
                     continue
-            if contains_phrase(body, name):
+            if not name or contains_phrase(body, name):
                 at = body.casefold().find(name.casefold())
                 excerpt = body[max(0, at - 160):at + len(name) + 240] if at >= 0 else body[:400]
                 hits.append(SearchHit(provider="company_site", query=f"{name} site:{domain}",

@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     data_dir: str = "./data"
     result_cache_hours: int = 24
     max_results_per_query: int = 8
+    organization_keyless_search: bool = True
 
 
 settings = Settings()

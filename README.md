@@ -76,3 +76,9 @@ At 1,500 contacts/day and three uncached broad queries each, plan for up to **4,
 Current storage is SQLite for a local research tool. Before cloud deployment add authentication/RBAC, managed PostgreSQL, a distributed queue/quota, source terms/robots review, retention controls and a measured load test. Do not expose this dashboard publicly with an empty `APP_API_KEY`. The dashboard is intended for localhost; `APP_API_KEY` protects API calls when set, but a production UI needs real user login and authorization.
 
 This tool intentionally does not collect home addresses, family details, breach records, private social posts or other unrelated personal data. It never bypasses a login or CAPTCHA. For sales, a defensible professional match and a source link are more useful than a large mixed dossier.
+
+## Organization-only CSV extension
+
+`POST /api/organizations/discover` accepts organization_name, website (optional), state/county/country and record_type. OrganizationEngine discovers candidate websites with the configured search provider or a keyless, robots-aware public HTML search adapter, then validates site ownership/geography and crawls bounded first-party staff/contact/sitemap pages. Structured/public emails are returned with role relevance, source excerpts and review status. No guessed emails or send actions. Public search can throttle/challenge requests; the tool stops rather than bypassing.
+
+For a standalone resumable CSV run: `python -m deepsearch.organization_csv input.csv --output enriched.csv --start 840147 --end 841190`. This preserves IDs and uses a checkpoint. Standalone email verification is explicitly NOT_CHECKED; the outbound dashboard adds its own actual verifier observations.

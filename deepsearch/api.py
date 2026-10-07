@@ -1,4 +1,5 @@
 from pathlib import Path
+import asyncio
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse
@@ -8,11 +9,14 @@ from deepsearch.config import settings
 from deepsearch.engine import SearchEngine
 from deepsearch.models import IdentityReport, SearchRequest
 from deepsearch.storage import Storage
+from deepsearch.organizations import OrganizationEngine, OrganizationRequest
 
 
 store = Storage(settings.data_dir)
 engine = SearchEngine(settings, store)
 app = FastAPI(title="Deep Web Search Tools", version="0.1.0")
+
+
 static_dir = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
@@ -20,6 +24,14 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 def authorize(x_api_key: str | None = Header(default=None)):
     if settings.app_api_key and x_api_key != settings.app_api_key:
         raise HTTPException(401, "Invalid API key")
+
+
+@app.post('/api/organizations/discover', dependencies=[Depends(authorize)])
+async def discover_organization(data: OrganizationRequest):
+    try:
+        return await asyncio.wait_for(OrganizationEngine(engine).run(data),150)
+    except TimeoutError as exc:
+        raise HTTPException(503,'Organization discovery reached its bounded time limit; retry the row') from exc
 
 
 @app.get("/")

@@ -1,6 +1,9 @@
 """Search API adapters. Search snippets are leads, never identity proof."""
 from abc import ABC, abstractmethod
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs, urljoin
+from html.parser import HTMLParser
+from urllib.robotparser import RobotFileParser
+import time
 
 import httpx
 
@@ -11,6 +14,44 @@ class SearchProvider(ABC):
     @abstractmethod
     async def search(self, query: str, limit: int) -> list[SearchHit]:
         raise NotImplementedError
+
+
+class _PublicResults(HTMLParser):
+    def __init__(self):
+        super().__init__();self.results=[];self.current=None
+    def handle_starttag(self,tag,attrs):
+        attrs=dict(attrs)
+        if tag=='a' and 'result__a' in attrs.get('class','').split():
+            url=urljoin('https://html.duckduckgo.com/',attrs.get('href',''))
+            url=parse_qs(urlparse(url).query).get('uddg',[url])[0]
+            self.current={'url':url,'title':''}
+    def handle_data(self,text):
+        if self.current:self.current['title']+=text
+    def handle_endtag(self,tag):
+        if tag=='a' and self.current:self.results.append(self.current);self.current=None
+
+
+class KeylessWebSearchProvider(SearchProvider):
+    """Public HTML results when allowed by robots; stop on challenges and throttling."""
+    base_url='https://html.duckduckgo.com'
+    _robots=None
+    _robots_until=0
+    async def search(self,query,limit):
+        headers={'User-Agent':'BynryResearch/0.1 (public professional research)'}
+        async with httpx.AsyncClient(timeout=15,trust_env=False,headers=headers) as client:
+            if not self._robots or type(self)._robots_until<time.monotonic():
+                response=await client.get(self.base_url+'/robots.txt')
+                response.raise_for_status()
+                robots=RobotFileParser();robots.parse(response.text.splitlines())
+                type(self)._robots=robots;type(self)._robots_until=time.monotonic()+3600
+            if not self._robots.can_fetch(headers['User-Agent'],self.base_url+'/html/'):
+                raise RuntimeError('Public search robots policy disallows automated access')
+            response=await client.get(self.base_url+'/html/',params={'q':query})
+            response.raise_for_status()
+            if response.status_code!=200 or 'anomaly.js' in response.text or 'challenge-form' in response.text:
+                raise RuntimeError('Public search challenged or throttled this request; no bypass attempted')
+            parser=_PublicResults();parser.feed(response.text)
+            return _hits('public_web',query,parser.results[:limit],'snippet')
 
 
 class BraveSearchProvider(SearchProvider):

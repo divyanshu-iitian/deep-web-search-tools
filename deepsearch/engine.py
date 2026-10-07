@@ -9,7 +9,7 @@ from deepsearch.company_discovery import discover_company_pages
 from deepsearch.identity import canonical_url, contains_person_name, evaluate_hit, name_variants, resolve_status
 from deepsearch.models import IdentityReport, SearchHit, SearchRequest
 from deepsearch.official_social import OfficialAccount
-from deepsearch.providers import BraveSearchProvider, DemoProvider, SearchProvider, SearxngProvider
+from deepsearch.providers import BraveSearchProvider, DemoProvider, SearchProvider, SearxngProvider, KeylessWebSearchProvider
 from deepsearch.sources import company_document_text, company_page_text, github_public_profile, github_username, is_company_url
 from deepsearch.storage import Storage
 
@@ -93,7 +93,7 @@ class SearchEngine:
         cached = self.storage.cached_hits(key)
         if cached is not None:
             return cached
-        if not demo and isinstance(provider, (BraveSearchProvider, SearxngProvider)):
+        if not demo and isinstance(provider, (BraveSearchProvider, SearxngProvider, KeylessWebSearchProvider)):
             # Conservative single-process pacing; production replicas need a shared quota.
             async with self._rate_lock:
                 delay = self._next_search_at - time.monotonic()
