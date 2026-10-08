@@ -15,6 +15,7 @@ from deepsearch.models import SearchHit
 from deepsearch.official_social import account_from_homepage_link
 from deepsearch.sources import is_company_url
 from deepsearch.storage import Storage
+from deepsearch.email_finder import PACER, retry_after_seconds
 
 
 USER_AGENT = "DeepWebSearchTools/0.2 (+public professional research)"
@@ -58,16 +59,22 @@ async def _get(client: httpx.AsyncClient, url: str, domain: str, redirects: int 
     if not is_company_url(url, domain):
         raise ValueError("URL is outside supplied company domain")
     host = urlparse(url).hostname
+    if PACER.cooling_until(host.lower()):
+        return 429, ""  # The site asked us to slow down earlier; respect it across jobs.
     addresses = await asyncio.get_running_loop().getaddrinfo(host, 443, type=socket.SOCK_STREAM)
     if not addresses or any(not ipaddress.ip_address(item[4][0]).is_global for item in addresses):
         raise ValueError("Company host must resolve only to public IP addresses")
+    await PACER.wait(host.lower())
     async with client.stream("GET", url, headers={"User-Agent": USER_AGENT}) as response:
+        if response.status_code in {429, 503}:
+            PACER.cooldown(host.lower(), retry_after_seconds(response))
+            return 429, ""
         if response.status_code in {301, 302, 303, 307, 308}:
             if redirects >= 3:
                 raise ValueError("Company redirect limit exceeded")
             target = urljoin(url, response.headers.get("location", ""))
             return await _get(client, target, domain, redirects + 1)
-        if response.status_code in {403, 404, 410, 429}:
+        if response.status_code in {403, 404, 410}:
             return response.status_code, ""
         response.raise_for_status()
         content_type = response.headers.get("content-type", "")
@@ -168,9 +175,11 @@ async def discover_company_pages(name: str, domain: str | None, storage: Storage
                         candidates.extend(locations)
                 except (httpx.HTTPError, OSError, ValueError, ElementTree.ParseError):
                     warnings.append("A company sitemap could not be read.")
+            documents = list(dict.fromkeys(url.split("#", 1)[0] for url in candidates
+                                           if is_company_url(url, domain) and urlparse(url).path.lower().endswith(".pdf")))[:300]
             candidates = list(dict.fromkeys(url.split("#", 1)[0] for url in candidates
                                             if _candidate(url, domain)))[:1500]
-            storage.save_value(f"site-index:{domain}", {"base": base, "urls": candidates,
+            storage.save_value(f"site-index:{domain}", {"base": base, "urls": candidates, "documents": documents,
                                                          "robots": robots_text,
                                                          "social_accounts": social_accounts}, 24)
 

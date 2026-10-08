@@ -13,7 +13,8 @@ from deepsearch.company_discovery import discover_company_pages
 from deepsearch.identity import contains_phrase
 from deepsearch.models import SearchHit
 from deepsearch.sources import is_company_url
-from deepsearch.providers import KeylessWebSearchProvider
+from deepsearch.providers import KeylessWebSearchProvider, SearchChain
+from deepsearch.email_finder import EXCLUDED_HOSTS as BROKER_HOSTS, deobfuscate, fetch_public, local_matches_name, rank_documents, script_emails, text_contacts
 
 EMAIL = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.I)
 ROLE = re.compile(r"\b(?:chief(?:\s+(?:executive|financial|information|technology|operating))?\s+officer|(?:vice\s+)?president(?: and CEO)?|CEO|CFO|CIO|general manager|(?:(?:utility|utilities|water|electric|gas|finance|financial|billing|information|technology|IT|operations|engineering|executive|managing|assistant|deputy|public works)\s+){0,3}(?:director|manager)|administrator|superintendent)\b", re.I)
@@ -150,8 +151,10 @@ def rank_contact(title, generic=False,context=''):
 
 def extract_contacts(html, text, source_url, supplied_name=''):
     parser=ContactHTML();parser.feed(html or '')
+    text,_=deobfuscate(text or '')
+    hidden=script_emails(html)  # Addresses assembled by inline scripts are still published addresses.
     rows=[]
-    def add(name,title,email,context,phone='',linkedin='',kind='person'):
+    def add(name,title,email,context,phone='',linkedin='',kind='person',evidence='publicly_listed'):
         emails=EMAIL.findall(email)
         if not emails:return
         address=emails[0].lower()
@@ -160,13 +163,14 @@ def extract_contacts(html, text, source_url, supplied_name=''):
         rows.append({'name':name,'title':title[:160],'email':address,'phone':phone[:80],
             'linkedin_url':linkedin,'source_url':source_url,'background':context[:1000],
             'kind':kind,'relevance_score':rank_contact(title,generic,context),
-            'email_evidence':'publicly_listed','identity_status':'supported' if name and not generic else 'review'})
+            'email_evidence':evidence,'identity_status':'supported' if name and not generic else 'review'})
     for person in _json_people(parser.jsonld):
         name=str(person.get('name',''))
         if len(name.split())>=2:
             add(name,str(person.get('jobTitle','')),str(person.get('email','')),json.dumps(person,ensure_ascii=False),
                 str(person.get('telephone','')),next((x for x in person.get('sameAs',[]) if 'linkedin.com/in/' in x),'') if isinstance(person.get('sameAs'),list) else '')
     for block,links in sorted(parser.blocks,key=lambda x:len(x[0])):
+        block,_=deobfuscate(block)
         emails=list(dict.fromkeys(EMAIL.findall(block+' '+' '.join(x for x in links if x.lower().startswith('mailto:')))))
         if len(emails)!=1:continue  # Never pair a directory-wide email with one person's name.
         roles=list(ROLE.finditer(block))
@@ -195,8 +199,12 @@ def extract_contacts(html, text, source_url, supplied_name=''):
         add(name,role.group(0).strip() if role else '',emails[0],block,phone.group(0) if phone else '',linkedin)
         if rows and re.search(r'\b(?:for immediate release|media contact|press releases)\b',block,re.I):
             rows[-1]['relevance_score']=min(rows[-1]['relevance_score'],10)
+    # Prose bios and minutes: bind an address to the nearest real name whose parts match it.
+    for found in text_contacts(text,source_url,ROLE,human_name,supplied_name):
+        if not any(x['email']==found['email'] for x in rows):
+            add(found['name'],found['title'],found['email'],found['background'],evidence=found['email_evidence'])
     # Unknown-name and general addresses remain review candidates; never invent a person.
-    all_emails=list(dict.fromkeys(EMAIL.findall(text+' '+' '.join(x for x in parser.links if x.lower().startswith('mailto:')))))
+    all_emails=list(dict.fromkeys(EMAIL.findall(text+' '+' '.join(x for x in parser.links if x.lower().startswith('mailto:')))+hidden))
     for email in all_emails:
         if not any(x['email']==email.lower() for x in rows):
             position=text.lower().find(email.lower());snippet=text[max(0,position-100):position+180] if position>=0 else 'Public mailto link on source page.'
@@ -226,18 +234,83 @@ async def wikipedia_websites(name, state):
             for entity in response.json().get('entities',{}).values() for claim in entity.get('claims',{}).get('P856',[])][:5]
 
 
+def same_person(found,wanted):
+    """Every meaningful part of the supplied name appears in the found name (order-insensitive)."""
+    wanted_parts=[x for x in re.findall(r"[a-z]+",wanted.casefold()) if len(x)>1]
+    found_parts=set(re.findall(r"[a-z]+",found.casefold()))
+    return bool(wanted_parts and found_parts and all(x in found_parts for x in wanted_parts))
+
+
 class OrganizationEngine:
     def __init__(self, search_engine, registry=wikipedia_websites):
         self.search_engine=search_engine
         self.registry=registry
 
+    def search_provider(self):
+        """Configured/self-hosted search first (SearXNG), then the paced keyless fallback."""
+        configured=self.search_engine._provider(False)
+        keyless=KeylessWebSearchProvider(self.search_engine.storage) if self.search_engine.settings.organization_keyless_search else None
+        providers=[x for x in (configured,keyless) if x]
+        if not providers:return None
+        return providers[0] if len(providers)==1 else SearchChain(providers)
+
+    async def find_named_contact(self,request,domain):
+        """Look for the supplied person's *published* address. Never constructs one.
+
+        Official-site pages are trusted for the organization's addresses. Other public pages
+        (for example a state commission or association directory) count only when the address
+        is on the organization's own domain, sits next to the person's full name and its local
+        part matches that name."""
+        storage=self.search_engine.storage;rows=[];notes=[]
+        try:
+            _,bodies,crawl_notes=await discover_company_pages(request.contact_name,domain,storage,6)
+            for url,text in bodies.items():
+                rows.extend(extract_contacts(storage.cached_value(f'site-html-v1:{url}') or '',text,url,request.contact_name))
+        except (httpx.HTTPError,OSError,ValueError):
+            notes.append('Official site pages naming the contact could not be checked.')
+        if any(same_person(row.get('name',''),request.contact_name) for row in rows):
+            return rows,notes
+        provider=self.search_provider()
+        if not provider:
+            notes.append('No search engine available for a named-contact lookup; configure SearXNG.')
+            return rows,notes
+        urls=[]
+        for query in (f'"{request.contact_name}" site:{domain}',f'"{request.contact_name}" "{request.organization_name}" email'):
+            try:
+                hits=await self.search_engine._search(provider,query,False)
+                urls.extend(hit.url for hit in hits)
+            except (httpx.HTTPError,RuntimeError,ValueError) as exc:
+                notes.append(f'Named-contact search unavailable ({type(exc).__name__}); it will be retried on a later run.')
+                break
+        from deepsearch.company_discovery import page_text
+        allowed=[x for x in dict.fromkeys(urls) if not any((urlparse(x).hostname or '').endswith(h) for h in BROKER_HOSTS)]
+        # Split the budget so public filings and directories elsewhere are read, not only the official site.
+        on_site=[x for x in allowed if is_company_url(x,domain)][:3]
+        for url in on_site+[x for x in allowed if x not in on_site and not is_company_url(x,domain)][:3]:
+            try:kind,content=await fetch_public(url,storage)
+            except (httpx.HTTPError,OSError,ValueError):continue
+            if kind not in {'html','pdf_text'} or not content:continue
+            text=page_text(content) if kind=='html' else content
+            if not contains_phrase(text,request.contact_name):continue
+            on_site=is_company_url(url,domain)
+            for row in extract_contacts(content if kind=='html' else '',text,url,request.contact_name):
+                email_domain=row['email'].rsplit('@',1)[-1]
+                if email_domain!=domain and not email_domain.endswith('.'+domain):continue
+                if not on_site:
+                    if not (same_person(row.get('name',''),request.contact_name) and local_matches_name(row['email'],request.contact_name)):
+                        continue
+                    row['email_evidence']='listed_on_public_third_party_page'
+                    row['background']=f'Listed on {urlparse(url).hostname}: '+row['background'][:900]
+                rows.append(row)
+        if not any(same_person(row.get('name',''),request.contact_name) for row in rows):
+            notes.append(f'No publicly listed email was found for {request.contact_name}; no address was guessed.')
+        return rows,notes
+
     async def run(self, request: OrganizationRequest):
         started=time.monotonic();warnings=[];candidates=[]
         if request.website:candidates=[request.website]
         else:
-            provider=self.search_engine._provider(False)
-            if not provider and self.search_engine.settings.organization_keyless_search:
-                provider=KeylessWebSearchProvider()
+            provider=self.search_provider()
             if provider:
                 try:
                     hits=await self.search_engine._search(provider,
@@ -271,13 +344,30 @@ class OrganizationEngine:
             evidence=[{'url':url,'excerpt':body[:1000]} for url,body in pages.items()]
             if matched_state:break
         contacts=[]
+        storage=self.search_engine.storage
         for url,text in pages.items():
-            html=self.search_engine.storage.cached_value(f'site-html-v1:{url}') or ''
+            html=storage.cached_value(f'site-html-v1:{url}') or ''
             contacts.extend(extract_contacts(html,text,url,request.contact_name))
+        if domain:
+            # Staff directories, org charts, board packets and annual reports are often PDFs only.
+            index=storage.cached_value(f'site-index:{domain}') or {}
+            for url in rank_documents(index.get('documents',[]),request.contact_name)[:self.search_engine.settings.max_documents_per_organization]:
+                kind,content=await fetch_public(url,storage)
+                if kind=='pdf_text' and content:
+                    contacts.extend(extract_contacts('',content,url,request.contact_name))
+                    evidence.append({'url':url,'excerpt':content[:1000]})
+        if (request.contact_name and domain and self.search_engine.settings.named_contact_search
+                and not any(same_person(row.get('name',''),request.contact_name) for row in contacts)):
+            found,notes=await self.find_named_contact(request,domain)
+            contacts.extend(found);warnings.extend(notes)
+        sources={}
+        for row in contacts:sources.setdefault(row['email'],set()).add(row['source_url'])
         unique={}
-        for row in sorted(contacts,key=lambda x:-x['relevance_score']):
+        for row in sorted(contacts,key=lambda x:(-x['relevance_score'],not x.get('name'))):
             unique.setdefault(row['email'],row)
         contacts=list(unique.values())[:50]
+        for row in contacts:
+            row['source_count']=len(sources.get(row['email'],()))  # Independent pages listing the same address.
         for row in contacts:
             email_domain=row['email'].rsplit('@',1)[-1]
             if email_domain!=domain and not email_domain.endswith('.'+domain):

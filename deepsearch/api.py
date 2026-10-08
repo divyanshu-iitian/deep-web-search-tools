@@ -13,6 +13,8 @@ from deepsearch.organizations import OrganizationEngine, OrganizationRequest
 
 
 store = Storage(settings.data_dir)
+from deepsearch.email_finder import PACER  # noqa: E402
+PACER.attach(store)  # Host cooldowns survive restarts and are shared by every request.
 engine = SearchEngine(settings, store)
 app = FastAPI(title="Deep Web Search Tools", version="0.1.0")
 

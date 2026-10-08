@@ -32,11 +32,45 @@ class _PublicResults(HTMLParser):
 
 
 class KeylessWebSearchProvider(SearchProvider):
-    """Public HTML results when allowed by robots; stop on challenges and throttling."""
+    """Public HTML results when allowed by robots; stop on challenges and throttling.
+
+    Queries are spaced (with jitter) across the whole process, and a challenge or 429 puts the
+    engine into a cooldown shared through the cache, so no job keeps hammering it."""
     base_url='https://html.duckduckgo.com'
     _robots=None
     _robots_until=0
+    _next_at=0.0
+    _lock=None
+    def __init__(self,storage=None,interval=None,cooldown_minutes=None):
+        from deepsearch.config import settings
+        self.storage=storage
+        self.interval=settings.keyless_search_interval_seconds if interval is None else interval
+        self.cooldown_minutes=settings.search_cooldown_minutes if cooldown_minutes is None else cooldown_minutes
+    def cooling(self):
+        until=self.storage.cached_value('search-cooldown:keyless') if self.storage else None
+        return bool(until and float(until)>time.time())
+    def _cool(self):
+        if self.storage:self.storage.save_value('search-cooldown:keyless',time.time()+self.cooldown_minutes*60,max(1,self.cooldown_minutes//60+1))
+    async def _pace(self):
+        import asyncio,random
+        if type(self)._lock is None:type(self)._lock=asyncio.Lock()
+        async with type(self)._lock:
+            delay=type(self)._next_at-time.monotonic()
+            if delay>0:await asyncio.sleep(delay)
+            type(self)._next_at=time.monotonic()+self.interval+random.uniform(0,self.interval/2)
     async def search(self,query,limit):
+        if self.cooling():
+            raise RuntimeError('Public search is cooling down after throttling; skipped without retrying')
+        await self._pace()
+        try:
+            return await self._search(query,limit)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in {403,429,503}:self._cool()
+            raise
+        except RuntimeError:
+            self._cool()
+            raise
+    async def _search(self,query,limit):
         headers={'User-Agent':'BynryResearch/0.1 (public professional research)'}
         async with httpx.AsyncClient(timeout=15,trust_env=False,headers=headers) as client:
             if not self._robots or type(self)._robots_until<time.monotonic():
@@ -82,7 +116,7 @@ class SearxngProvider(SearchProvider):
         self.base_url = base_url.rstrip("/")
 
     async def search(self, query: str, limit: int) -> list[SearchHit]:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=False, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=False, trust_env=False) as client:
             response = await client.get(
                 f"{self.base_url}/search",
                 params={"q": query, "format": "json", "safesearch": 2},
@@ -124,3 +158,28 @@ def _hits(provider: str, query: str, items: list[dict], snippet_key: str) -> lis
             results.append(hit)
             seen.add(hit.url)
     return results
+
+
+class SearchChain(SearchProvider):
+    """Try self-hosted/configured search first, then the polite keyless fallback."""
+
+    def __init__(self, providers: list[SearchProvider]):
+        self.providers = [x for x in providers if x is not None]
+        self.base_url = "+".join(type(x).__name__ for x in self.providers)
+
+    async def search(self, query: str, limit: int) -> list[SearchHit]:
+        errors = []
+        for provider in self.providers:
+            if getattr(provider, "cooling", lambda: False)():
+                errors.append(f"{type(provider).__name__} cooling down")
+                continue
+            try:
+                hits = await provider.search(query, limit)
+                if hits:
+                    return hits
+                errors.append(f"{type(provider).__name__} returned no results")
+            except (httpx.HTTPError, RuntimeError, ValueError) as exc:
+                errors.append(f"{type(provider).__name__}: {type(exc).__name__}")
+        if errors and all("no results" not in x for x in errors):
+            raise RuntimeError("; ".join(errors))
+        return []
