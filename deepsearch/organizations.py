@@ -3,6 +3,7 @@ import asyncio
 import json
 import re
 import time
+from difflib import SequenceMatcher
 from html.parser import HTMLParser
 from urllib.parse import urlparse, urljoin, unquote
 
@@ -39,6 +40,12 @@ class OrganizationRequest(BaseModel):
     max_pages: int = Field(default=12, ge=1, le=20)
 
 
+# The same kind of institution in English and Hindi names: "Guru Ghasidas University" brands itself "...Vishwavidyalaya".
+SAME_KIND = {"university": {"vishwavidyalaya", "viswavidyalaya", "vishwavidyalay", "vidyapeeth", "vidyapith"},
+             "college": {"mahavidyalaya", "mahavidyalay"}, "institute": {"sansthan", "sansthaan"}}
+SAME_KIND.update({alias: {kind} for kind, aliases in list(SAME_KIND.items()) for alias in aliases})
+
+
 def organization_matches(name, text):
     if contains_phrase(text, name):
         return True
@@ -46,7 +53,22 @@ def organization_matches(name, text):
     tokens = [x for x in re.findall(r"[a-z0-9]+", expanded.casefold()) if x not in {
         "city", "of", "the", "inc", "llc", "ltd", "company", "co", "annual", "conference", "and", "exhibition", "exposition", "sys", "dept"}]
     tokens = list(dict.fromkeys(tokens))
-    return bool(tokens and all(re.search(r"\b"+re.escape(x)+r"\b", text.casefold()) for x in tokens))
+    if not tokens:
+        return False
+    folded = text.casefold()
+    missing = [x for x in tokens if not any(re.search(r"\b"+re.escape(form)+r"\b", folded)
+                                            for form in {x} | SAME_KIND.get(x, set()))]
+    if not missing:
+        return True
+    # One mistyped word ("Guur Ghasidas University" for "Guru Ghasidas University") still identifies the site when
+    # every other word matches exactly; a different name ("Pine Utilities" for "Cedar Utilities") does not.
+    words = set(re.findall(r"[a-z0-9]+", folded))
+    return len(tokens) >= 3 and len(missing) == 1 and close_spelling(missing[0], words)
+
+
+def close_spelling(token, words):
+    return len(token) >= 4 and any(word[:1] == token[:1] and abs(len(word) - len(token)) <= 1
+                                   and SequenceMatcher(None, token, word).ratio() >= 0.75 for word in words)
 
 
 class BrandingHTML(HTMLParser):
@@ -234,6 +256,30 @@ async def wikipedia_websites(name, state):
             for entity in response.json().get('entities',{}).values() for claim in entity.get('claims',{}).get('P856',[])][:5]
 
 
+def address_named_rows(text,url,name,domain):
+    """Official pages sometimes drop the surname ("Prof (Dr.) Manoj Kumar") while the address keeps it
+    ("choubey.manoj@ggu.ac.in"). Accept only an organization-domain address whose local part holds both the first name
+    and the surname, on a page of the organization's own site that names the person."""
+    parts=[x for x in re.findall(r"[a-z]+",name.casefold()) if len(x)>=3 and x not in {'prof','professor','mrs'}]
+    named=re.search(r"\b"+re.escape(parts[0])+r"\b",text,re.I) if len(parts)>=2 else None
+    if not named:return []
+    first,last=parts[0],parts[-1];rows=[]
+    # Context for the email: the stated position near the name, without addresses or phone numbers.
+    nearby=text[named.start():named.start()+500]
+    position=re.search(r"(?:present position|designation|position|currently)\s*:?",nearby,re.I)
+    excerpt=re.sub(r"\+?\d[\d\s()-]{7,}\d","",EMAIL.sub("",nearby[position.end() if position else 0:]))
+    excerpt=re.split(r"\b(?:e-?mail|contact|phone|mobile|tel)\b",re.sub(r"\s+"," ",excerpt),maxsplit=1,flags=re.I)[0]
+    excerpt=excerpt.strip(" ,-:")[:300]
+    for email in dict.fromkeys(x.lower() for x in EMAIL.findall(text)):
+        local,_,host=email.partition('@')
+        letters=re.sub(r'[^a-z]','',local)
+        if (host==domain or host.endswith('.'+domain)) and first in letters and last in letters:
+            rows.append({'name':name,'title':'','email':email,'phone':'','linkedin_url':'','source_url':url,
+                'background':f'Listed on {urlparse(url).hostname}: {excerpt}',
+                'kind':'person','relevance_score':80,'email_evidence':'address_matches_name_on_official_page','identity_status':'supported'})
+    return rows
+
+
 def same_person(found,wanted):
     """Every meaningful part of the supplied name appears in the found name (order-insensitive)."""
     wanted_parts=[x for x in re.findall(r"[a-z]+",wanted.casefold()) if len(x)>1]
@@ -274,25 +320,36 @@ class OrganizationEngine:
         if not provider:
             notes.append('No search engine available for a named-contact lookup; configure SearXNG.')
             return rows,notes
-        urls=[]
-        for query in (f'"{request.contact_name}" site:{domain}',f'"{request.contact_name}" "{request.organization_name}" email'):
+        urls=[];failures=[]
+        # Exact-phrase queries first; when the engines that honour quotes are throttled, plain queries still work.
+        for query in (f'"{request.contact_name}" site:{domain}',f'"{request.contact_name}" "{request.organization_name}" email',
+                      f'{request.contact_name} site:{domain}',f'{request.contact_name} {request.organization_name}'):
             try:
                 hits=await self.search_engine._search(provider,query,False)
                 urls.extend(hit.url for hit in hits)
             except (httpx.HTTPError,RuntimeError,ValueError) as exc:
-                notes.append(f'Named-contact search unavailable ({type(exc).__name__}); it will be retried on a later run.')
-                break
+                failures.append(type(exc).__name__)
+            if len(urls)>=8:break
+        if failures and not urls:
+            notes.append(f'Named-contact search unavailable ({failures[0]}); it will be retried on a later run.')
         from deepsearch.company_discovery import page_text
         allowed=[x for x in dict.fromkeys(urls) if not any((urlparse(x).hostname or '').endswith(h) for h in BROKER_HOSTS)]
         # Split the budget so public filings and directories elsewhere are read, not only the official site.
-        on_site=[x for x in allowed if is_company_url(x,domain)][:3]
+        # Personal pages first: a URL holding the person's name, or a CV/PDF, usually carries their address.
+        name_parts=[x for x in re.findall(r"[a-z]+",request.contact_name.casefold()) if len(x)>=3]
+        def personal(url):
+            path=unquote(urlparse(url).path).casefold()
+            return sum(part in path for part in name_parts)+(path.endswith('.pdf') or 'cv' in re.split(r'[^a-z]+',path))
+        on_site=sorted([x for x in allowed if is_company_url(x,domain)],key=lambda x:-personal(x))[:4]
         for url in on_site+[x for x in allowed if x not in on_site and not is_company_url(x,domain)][:3]:
             try:kind,content=await fetch_public(url,storage)
             except (httpx.HTTPError,OSError,ValueError):continue
             if kind not in {'html','pdf_text'} or not content:continue
             text=page_text(content) if kind=='html' else content
-            if not contains_phrase(text,request.contact_name):continue
             on_site=is_company_url(url,domain)
+            if not contains_phrase(text,request.contact_name):
+                if on_site:rows.extend(address_named_rows(text,url,request.contact_name,domain))
+                continue
             for row in extract_contacts(content if kind=='html' else '',text,url,request.contact_name):
                 email_domain=row['email'].rsplit('@',1)[-1]
                 if email_domain!=domain and not email_domain.endswith('.'+domain):continue

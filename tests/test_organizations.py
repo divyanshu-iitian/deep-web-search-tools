@@ -44,6 +44,12 @@ def test_organization_name_and_geography_are_checked(tmp_path,monkeypatch):
 
 def test_absent_sources_do_not_invent_company_facts():
     assert not organization_matches('Cedar Utilities','Pine Utilities')
+    assert organization_matches('Guur Ghasidas University', 'Welcome to Guru Ghasidas University, Bilaspur')
+    assert organization_matches('Guru Ghasidas University', 'Guru Ghasidas Vishwavidyalaya, Bilaspur')
+    assert organization_matches('Guur Ghasidas University', 'GURU GHASIDAS VISHWAVIDYALAYA')
+    assert not organization_matches('Guru Ghasidas University', 'Guru Ghasidas College')
+    assert not organization_matches('Guur Ghasidas University', 'Welcome to Guru Nanak University')
+    assert not organization_matches('Cedr Utilities', 'Cedar Utilities')  # Too short a name to accept a near spelling.
     facts=classify_organization(OrganizationRequest(organization_name='Cedar Utilities'),' ',{})
     assert 'customers_served' not in facts
 
@@ -78,3 +84,13 @@ def test_association_membership_size_is_not_its_customer_count():
         'APGA has over 730 members. Small systems under 500 meters pay dues.',
         {'https://apga.org':'APGA has over 730 members. Small systems under 500 meters pay dues.'})
     assert 'customers_served' not in facts and facts['member_count']['value']=='730'
+
+
+def test_official_address_holding_first_name_and_surname_identifies_a_person_named_without_surname():
+    from deepsearch.organizations import address_named_rows
+    cv = 'CURRICULUM VITAE Prof (Dr.) Manoj Kumar, Professor and Head. Email: choubey.manoj@gmail.com choubey.manoj@ggu.ac.in office@ggu.ac.in'
+    rows = address_named_rows(cv, 'https://ggu.ac.in/media/cv.pdf', 'Manoj Kumar Choubey', 'ggu.ac.in')
+    assert [row['email'] for row in rows] == ['choubey.manoj@ggu.ac.in']  # Personal Gmail and shared mailboxes are not used.
+    assert rows[0]['email_evidence'] == 'address_matches_name_on_official_page'
+    assert address_named_rows(cv, 'https://ggu.ac.in/cv.pdf', 'Anil Choubey', 'ggu.ac.in') == []  # First name not on the page.
+    assert address_named_rows('Manoj Kumar: manoj.k@ggu.ac.in', 'https://ggu.ac.in/x', 'Manoj Kumar Choubey', 'ggu.ac.in') == []
