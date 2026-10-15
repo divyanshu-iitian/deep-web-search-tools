@@ -94,3 +94,37 @@ def test_official_address_holding_first_name_and_surname_identifies_a_person_nam
     assert rows[0]['email_evidence'] == 'address_matches_name_on_official_page'
     assert address_named_rows(cv, 'https://ggu.ac.in/cv.pdf', 'Anil Choubey', 'ggu.ac.in') == []  # First name not on the page.
     assert address_named_rows('Manoj Kumar: manoj.k@ggu.ac.in', 'https://ggu.ac.in/x', 'Manoj Kumar Choubey', 'ggu.ac.in') == []
+
+
+def test_leaders_named_on_the_site_are_found_without_reading_headings_as_names():
+    from deepsearch.organizations import leaders
+    pages={'https://demco.org/about':'Leadership\nRandy Pierce, Chief Executive Officer\nJohn Smith - General Manager\n'
+                                    'Billing Manager: Lisa Wong\nAccounting Department, Manager\nCustomer Service, Manager'}
+    names=[x['name'] for x in leaders(pages)]
+    assert names[:2]==['Randy Pierce','John Smith'] and 'Lisa Wong' in names
+    assert not any('Leadership' in x or 'Department' in x or 'Customer' in x for x in names)
+
+
+def test_abbreviated_names_and_test_hosts():
+    from deepsearch.organizations import site_candidates, spelled_out
+    assert organization_matches('Coast Elec Power Assn','Coast Electric Power Association')
+    assert organization_matches('Choctawhatche Elec Coop, Inc','Choctawhatchee Electric Cooperative, Inc.')
+    assert not organization_matches('Pine Elec Coop','Oak Electric Cooperative')
+    assert spelled_out('Coast Elec Power Assn')=='Coast electric Power association'
+    assert site_candidates(['https://cdx-tst.nvenergy.com/x','https://www.nvenergy.com','https://my.nvenergy.com'])==[
+        'https://nvenergy.com','https://www.nvenergy.com','https://my.nvenergy.com']
+
+
+def test_leader_named_on_the_site_is_looked_up_by_name(tmp_path,monkeypatch):
+    storage=Storage(str(tmp_path));engine=SearchEngine(Settings(organization_keyless_search=False),storage)
+    async def registry(*args):return ['https://demco.org']
+    async def crawl(name,domain,store,limit):
+        store.save_value('site-html-v1:https://demco.org/','<title>Demco</title>',24)
+        if name:  # The named search crawls for that person: their card publishes the address.
+            return [],{'https://demco.org/team':'John Smith General Manager john.smith@demco.org'},[]
+        return [],{'https://demco.org/':'Demco electric cooperative. John Smith - General Manager. row@demco.org'},[]
+    monkeypatch.setattr('deepsearch.organizations.discover_company_pages',crawl)
+    result=asyncio.run(OrganizationEngine(engine,registry).run(OrganizationRequest(organization_name='Demco',state='')))
+    person=next(x for x in result['contacts'] if x['email']=='john.smith@demco.org')
+    assert person['name']=='John Smith' and person['identity_status']=='supported' and person['relevance_score']>=90
+    assert 'Named on demco.org as General Manager' in person['background']

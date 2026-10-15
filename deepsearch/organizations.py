@@ -44,20 +44,54 @@ class OrganizationRequest(BaseModel):
 SAME_KIND = {"university": {"vishwavidyalaya", "viswavidyalaya", "vishwavidyalay", "vidyapeeth", "vidyapith"},
              "college": {"mahavidyalaya", "mahavidyalay"}, "institute": {"sansthan", "sansthaan"}}
 SAME_KIND.update({alias: {kind} for kind, aliases in list(SAME_KIND.items()) for alias in aliases})
+# Lists abbreviate what websites spell out: "Coast Elec Power Assn", "Pine Coop", "Water Dist".
+ABBREVIATIONS = {"elec": {"electric", "electrical", "electricity"}, "coop": {"cooperative", "co-op"},
+                 "co-op": {"cooperative"}, "assn": {"association"}, "assoc": {"association"}, "dist": {"district"},
+                 "util": {"utility", "utilities"}, "utils": {"utilities"}, "auth": {"authority"}, "corp": {"corporation"},
+                 "dept": {"department"}, "muni": {"municipal"}, "mun": {"municipal"}, "pwr": {"power"}, "wtr": {"water"},
+                 "svc": {"service", "services"}, "svcs": {"services"}, "natl": {"national"}, "intl": {"international"},
+                 "twp": {"township"}, "cnty": {"county"}, "mtn": {"mountain"}, "ft": {"fort"}, "st": {"saint"},
+                 "sys": {"system", "systems"}, "comm": {"commission"}, "bd": {"board"}, "pud": {"public utility district"}}
+
+
+def name_forms(token):
+    return {token} | SAME_KIND.get(token, set()) | ABBREVIATIONS.get(token, set())
+
+
+def spelled_out(name):
+    """"Coast Elec Power Assn" -> "Coast Electric Power Association", for a search engine query."""
+    return ' '.join(sorted(ABBREVIATIONS[w.lower().strip('.,')])[0] if w.lower().strip('.,') in ABBREVIATIONS else w
+                    for w in name.split())
+
+
+TEST_HOST=re.compile(r'(?:^|-)(?:test|tst|dev|stage|staging|qa|uat|sandbox|preprod|demo)(?:-|\d|$)')
+
+
+def site_candidates(urls):
+    """Search hits as websites to check. Test and staging hosts ("cdx-tst.nvenergy.com") are swapped for the main
+    domain, which is what the organization actually publishes."""
+    out=[]
+    for url in urls:
+        host=(urlparse(url if '://' in url else 'https://'+url).hostname or '').lower().removeprefix('www.')
+        labels=host.split('.')
+        if len(labels)>2 and any(TEST_HOST.search(label) for label in labels[:-2]):
+            out.append('https://'+'.'.join(labels[-2:]))
+        else:
+            out.append(url)
+    return list(dict.fromkeys(out))
 
 
 def organization_matches(name, text):
     if contains_phrase(text, name):
         return True
     expanded = re.sub(r'\([^)]*\)','',name)
-    tokens = [x for x in re.findall(r"[a-z0-9]+", expanded.casefold()) if x not in {
+    tokens = [x for x in re.findall(r"[a-z0-9]+(?:-op)?", expanded.casefold()) if x not in {
         "city", "of", "the", "inc", "llc", "ltd", "company", "co", "annual", "conference", "and", "exhibition", "exposition", "sys", "dept"}]
     tokens = list(dict.fromkeys(tokens))
     if not tokens:
         return False
     folded = text.casefold()
-    missing = [x for x in tokens if not any(re.search(r"\b"+re.escape(form)+r"\b", folded)
-                                            for form in {x} | SAME_KIND.get(x, set()))]
+    missing = [x for x in tokens if not any(re.search(r"\b"+re.escape(form)+r"\b", folded) for form in name_forms(x))]
     if not missing:
         return True
     # One mistyped word ("Guur Ghasidas University" for "Guru Ghasidas University") still identifies the site when
@@ -256,6 +290,40 @@ async def wikipedia_websites(name, state):
             for entity in response.json().get('entities',{}).values() for claim in entity.get('claims',{}).get('P856',[])][:5]
 
 
+LEADER_ROLE=r'(?i:general\s+manager|chief\s+executive\s+officer|ceo|president(?:\s*(?:&|and)\s*ceo)?|executive\s+director|'\
+    r'utility\s+director|utilities\s+director|(?:billing|customer\s+service|finance|information\s+technology|it|operations)\s+(?:manager|director|supervisor)|'\
+    r'chief\s+financial\s+officer|cfo|superintendent|city\s+administrator|town\s+administrator|manager)'
+# A name stays on one line: "Leadership\nRandy Pierce" is a heading and a name, not one name.
+LINE_NAME=r"(?:[A-Z][a-zA-Z'’-]+\.?[ \t]+){1,3}[A-Z][a-zA-Z'’-]+"
+HEADINGS={'leadership','meet','our','contact','contacts','about','staff','board','team','management','executive','the',
+          'directors','officers','departments','department','general','welcome','message','from','by','and','with'}
+LEADER_AFTER=re.compile(r'(?P<name>'+LINE_NAME+r')[ \t]*(?:,|-|–|—|\||:|\(|\n)[ \t]*(?:the[ \t]+)?(?P<role>'+LEADER_ROLE+r')\b')
+LEADER_BEFORE=re.compile(r'\b(?P<role>'+LEADER_ROLE+r')[ \t]*(?:,|-|–|—|\||:)?[ \t]*(?P<name>'+LINE_NAME+r')\b')
+
+
+def leaders(pages):
+    """People the official site names in a leadership or billing role, best first. Names only, never an address:
+    each is then looked up with the named-contact search, which needs a published address next to the name."""
+    found={}
+    for url,text in pages.items():
+        for pattern in (LEADER_AFTER,LEADER_BEFORE):
+            for match in pattern.finditer(text or ''):
+                words=match.group('name').split()
+                while words and words[0].lower() in HEADINGS:words.pop(0)
+                name=' '.join(words).strip('. ')
+                role=' '.join(match.group('role').split())
+                if len(words)<2 or not human_name(name) or any(w.lower() in HEADINGS for w in words):continue
+                score=rank_contact(role.lower(),False,'utility')
+                key=name.lower()
+                current=found.get(key)
+                if not current or score>current[1]:
+                    found[key]=(name,score,role,url,(current[4] if current else 0)+1)
+                else:
+                    found[key]=current[:4]+(current[4]+1,)
+    ranked=sorted(found.values(),key=lambda x:(-x[1],-x[4]))
+    return [{'name':name,'title':role.title() if role.islower() else role,'source_url':url} for name,score,role,url,_ in ranked if score>=55]
+
+
 def address_named_rows(text,url,name,domain):
     """Official pages sometimes drop the surname ("Prof (Dr.) Manoj Kumar") while the address keeps it
     ("choubey.manoj@ggu.ac.in"). Accept only an organization-domain address whose local part holds both the first name
@@ -369,11 +437,16 @@ class OrganizationEngine:
         else:
             provider=self.search_provider()
             if provider:
-                try:
-                    hits=await self.search_engine._search(provider,
-                        f'"{request.organization_name}" {request.state} {request.county} official website',False)
-                    candidates=[x.url for x in hits]
-                except (httpx.HTTPError,RuntimeError,ValueError):warnings.append('Broad search provider unavailable for this organization.')
+                # Exact name first; lists often abbreviate or misspell it, so a plain spelled-out query follows.
+                for query in (f'"{request.organization_name}" {request.state} {request.county} official website',
+                              f'{spelled_out(request.organization_name)} {request.state} official website'):
+                    try:
+                        hits=await self.search_engine._search(provider,query,False)
+                        candidates+=[x.url for x in hits]
+                    except (httpx.HTTPError,RuntimeError,ValueError):pass
+                    if len(candidates)>=3:break
+                if not candidates:warnings.append('Broad search found no website for this organization.')
+                candidates=site_candidates(candidates)
             if not candidates:
                 try:candidates=await self.registry(request.organization_name,request.state)
                 except (httpx.HTTPError,ValueError):warnings.append('Free public entity registry unavailable.')
@@ -417,6 +490,19 @@ class OrganizationEngine:
                 and not any(same_person(row.get('name',''),request.contact_name) for row in contacts)):
             found,notes=await self.find_named_contact(request,domain)
             contacts.extend(found);warnings.extend(notes)
+        elif (not request.contact_name and domain and self.search_engine.settings.named_contact_search
+                and not any(row.get('name') and row.get('identity_status')=='supported' for row in contacts)):
+            # No named address on the site itself: look up the leaders it names (GM, CEO, billing manager) the same way
+            # a supplied name is looked up. Only an address published next to that person's name is kept.
+            for leader in leaders(pages)[:2]:
+                found,notes=await self.find_named_contact(request.model_copy(update={'contact_name':leader['name']}),domain)
+                named=[row for row in found if same_person(row.get('name',''),leader['name'])]
+                for row in named:
+                    row['title']=row.get('title') or leader['title']
+                    row['relevance_score']=max(row.get('relevance_score',0),rank_contact(leader['title'].lower(),False,'utility'))
+                    row['background']=f"Named on {urlparse(leader['source_url']).hostname} as {leader['title']}. "+row.get('background','')
+                contacts.extend(found);warnings.extend(notes)
+                if named:break
         sources={}
         for row in contacts:sources.setdefault(row['email'],set()).add(row['source_url'])
         unique={}
