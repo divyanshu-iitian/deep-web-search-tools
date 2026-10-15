@@ -296,7 +296,8 @@ LEADER_ROLE=r'(?i:general\s+manager|chief\s+executive\s+officer|ceo|president(?:
 # A name stays on one line: "Leadership\nRandy Pierce" is a heading and a name, not one name.
 LINE_NAME=r"(?:[A-Z][a-zA-Z'’-]+\.?[ \t]+){1,3}[A-Z][a-zA-Z'’-]+"
 HEADINGS={'leadership','meet','our','contact','contacts','about','staff','board','team','management','executive','the',
-          'directors','officers','departments','department','general','welcome','message','from','by','and','with'}
+          'directors','officers','departments','department','general','welcome','message','from','by','and','with',
+          'skip','content','menu','navigation','home','login','search','main','news','read','more','view','click','page'}
 LEADER_AFTER=re.compile(r'(?P<name>'+LINE_NAME+r')[ \t]*(?:,|-|–|—|\||:|\(|\n)[ \t]*(?:the[ \t]+)?(?P<role>'+LEADER_ROLE+r')\b')
 LEADER_BEFORE=re.compile(r'\b(?P<role>'+LEADER_ROLE+r')[ \t]*(?:,|-|–|—|\||:)?[ \t]*(?P<name>'+LINE_NAME+r')\b')
 
@@ -312,7 +313,9 @@ def leaders(pages):
                 while words and words[0].lower() in HEADINGS:words.pop(0)
                 name=' '.join(words).strip('. ')
                 role=' '.join(match.group('role').split())
-                if len(words)<2 or not human_name(name) or any(w.lower() in HEADINGS for w in words):continue
+                # "DEMCO Skip" (logo plus "Skip to content") is page furniture, not a person.
+                if (len(words)<2 or not human_name(name) or any(w.lower() in HEADINGS for w in words)
+                        or any(len(w)>3 and w.isupper() for w in words)):continue
                 score=rank_contact(role.lower(),False,'utility')
                 key=name.lower()
                 current=found.get(key)
@@ -495,7 +498,15 @@ class OrganizationEngine:
             # No named address on the site itself: look up the leaders it names (GM, CEO, billing manager) the same way
             # a supplied name is looked up. Only an address published next to that person's name is kept.
             for leader in leaders(pages)[:2]:
-                found,notes=await self.find_named_contact(request.model_copy(update={'contact_name':leader['name']}),domain)
+                # The whole organization must finish inside the API's 150-second bound: what was found so far is kept.
+                budget=135-(time.monotonic()-started)
+                if budget<20:
+                    warnings.append('Leader lookup skipped: the organization search used its time budget.');break
+                try:
+                    found,notes=await asyncio.wait_for(self.find_named_contact(
+                        request.model_copy(update={'contact_name':leader['name']}),domain),budget)
+                except asyncio.TimeoutError:
+                    warnings.append(f"Lookup for {leader['name']} ran out of time; no address was guessed.");break
                 named=[row for row in found if same_person(row.get('name',''),leader['name'])]
                 for row in named:
                     row['title']=row.get('title') or leader['title']
