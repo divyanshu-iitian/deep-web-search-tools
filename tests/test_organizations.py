@@ -128,3 +128,22 @@ def test_leader_named_on_the_site_is_looked_up_by_name(tmp_path,monkeypatch):
     person=next(x for x in result['contacts'] if x['email']=='john.smith@demco.org')
     assert person['name']=='John Smith' and person['identity_status']=='supported' and person['relevance_score']>=90
     assert 'Named on demco.org as General Manager' in person['background']
+
+
+def test_blocked_search_engines_are_reported_as_not_searched(tmp_path):
+    from deepsearch.organizations import SEARCH_UNAVAILABLE
+    storage=Storage(str(tmp_path));engine=SearchEngine(Settings(organization_keyless_search=False),storage)
+    class Blocked:
+        async def search(self,query,limit=10):raise RuntimeError('SearXNG upstream engines were unavailable')
+    org=OrganizationEngine(engine,lambda *a:[])
+    org.search_provider=lambda:Blocked()
+    async def no_registry(*args):return []
+    org.registry=no_registry
+    result=asyncio.run(org.run(OrganizationRequest(organization_name='Cedar Utilities',state='FL')))
+    assert SEARCH_UNAVAILABLE in result['warnings'] and result['website']==''
+
+
+def test_a_city_is_not_matched_to_a_school_district_of_the_same_name():
+    assert not owns_website('City of Lebanon','<title>Lebanon City Schools - Home</title>','Copyright Lebanon City Schools')
+    assert owns_website('City of Lebanon','<title>City of Lebanon, Ohio</title>','Copyright City of Lebanon')
+    assert owns_website('Lebanon City Schools','<title>Lebanon City Schools</title>','')

@@ -54,6 +54,9 @@ ABBREVIATIONS = {"elec": {"electric", "electrical", "electricity"}, "coop": {"co
                  "sys": {"system", "systems"}, "comm": {"commission"}, "bd": {"board"}, "pud": {"public utility district"}}
 
 
+SEARCH_UNAVAILABLE='Search engines were unavailable (blocked or throttled); this organization was not really searched.'
+
+
 def name_forms(token):
     return {token} | SAME_KIND.get(token, set()) | ABBREVIATIONS.get(token, set())
 
@@ -117,11 +120,22 @@ class BrandingHTML(HTMLParser):
     def handle_data(self,data):
         if self.depth:self.values.append(data)
 
+OTHER_INSTITUTIONS=('schools','school district','school','church','library','hospital','college','university',
+                    'chamber of commerce','bank','credit union','museum','realty','law firm','newspaper')
+
+
 def owns_website(name,html,text):
     parser=BrandingHTML();parser.feed(html or '')
     signals=' '.join(parser.values)
     signals+=' '+' '.join(re.findall(r'(?:copyright|©)\s*.{0,200}',text,re.I))
-    return organization_matches(name,signals)
+    if not organization_matches(name,signals):
+        return False
+    # "City of Lebanon" must not land on "Lebanon City Schools": a site branded as another kind of institution is
+    # a different organization unless the name itself says that kind.
+    title=' '.join(parser.values[:3]).casefold()
+    wanted=set(re.findall(r'[a-z]+',name.casefold()))
+    named=lambda kind:all({w,w.rstrip('s'),w+'s'}&wanted for w in kind.split())
+    return not any(re.search(r'\b'+re.escape(kind)+r'\b',title) and not named(kind) for kind in OTHER_INSTITUTIONS)
 
 
 class ContactHTML(HTMLParser):
@@ -567,7 +581,7 @@ class OrganizationEngine:
         return rows,list(dict.fromkeys(notes))
 
     async def run(self, request: OrganizationRequest):
-        started=time.monotonic();warnings=[];candidates=[]
+        started=time.monotonic();warnings=[];candidates=[];search_failed=0
         if request.website:candidates=[request.website]
         else:
             provider=self.search_provider()
@@ -581,9 +595,13 @@ class OrganizationEngine:
                     try:
                         hits=await self.search_engine._search(provider,' '.join(query.split()),False)
                         candidates+=[x.url for x in hits]
-                    except (httpx.HTTPError,RuntimeError,ValueError):pass
+                    except (httpx.HTTPError,RuntimeError,ValueError):search_failed+=1
                     if len(candidates)>=3:break
-                if not candidates:warnings.append('Broad search found no website for this organization.')
+                # Blocked or throttled engines are not "nothing exists": callers retry these later.
+                if not candidates and search_failed:
+                    warnings.append(SEARCH_UNAVAILABLE)
+                elif not candidates:
+                    warnings.append('Broad search found no website for this organization.')
                 candidates=site_candidates(candidates)
             if not candidates:
                 try:candidates=await self.registry(request.organization_name,request.state)
