@@ -641,13 +641,23 @@ class OrganizationEngine:
             # Staff directories, org charts, board packets and annual reports are often PDFs only.
             index=storage.cached_value(f'site-index:{domain}') or {}
             for url in rank_documents(index.get('documents',[]),request.contact_name)[:self.search_engine.settings.max_documents_per_organization]:
-                kind,content=await fetch_public(url,storage)
+                remaining=105-(time.monotonic()-started)
+                if remaining<5:
+                    warnings.append('Document lookup used its time budget; previous evidence was retained.');break
+                try:
+                    kind,content=await asyncio.wait_for(fetch_public(url,storage),min(20,remaining))
+                except (httpx.HTTPError,OSError,ValueError,TimeoutError):
+                    warnings.append('A public document could not be read; previous evidence was retained.');continue
                 if kind=='pdf_text' and content:
                     contacts.extend(extract_contacts('',content,url,request.contact_name))
                     evidence.append({'url':url,'excerpt':content[:1000]})
         if (request.contact_name and domain and self.search_engine.settings.named_contact_search
                 and not any(same_person(row.get('name',''),request.contact_name) for row in contacts)):
-            found,notes=await self.find_named_contact(request,domain)
+            budget=min(35,130-(time.monotonic()-started))
+            try:
+                found,notes=await asyncio.wait_for(self.find_named_contact(request,domain),max(0,budget))
+            except TimeoutError:
+                found,notes=[],['Named contact lookup used its time budget; previous evidence was retained.']
             contacts.extend(found);warnings.extend(notes)
         elif (not request.contact_name and domain and self.search_engine.settings.named_contact_search
                 and not any(row.get('name') and row.get('identity_status')=='supported' for row in contacts)):

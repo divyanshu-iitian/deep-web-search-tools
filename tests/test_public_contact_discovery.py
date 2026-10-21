@@ -120,3 +120,23 @@ def test_public_pdf_can_establish_company_domain_and_named_address(tmp_path,monk
     assert result['domain']=='cedar.org' and result['html']==''
     from deepsearch.organizations import extract_contacts
     assert extract_contacts('',result['text'],result['url'])[0]['email']=='maya.chen@cedar.org'
+
+
+def test_company_only_run_recovers_contact_when_homepage_is_blocked(tmp_path,monkeypatch):
+    engine=SearchEngine(Settings(),Storage(str(tmp_path)))
+    monkeypatch.setattr(OrganizationEngine,'search_provider',lambda self:object())
+    async def search(provider,query,demo):
+        return [SearchHit(provider='test',query=query,title='Cedar Utilities',url='https://state.gov/directory')]
+    async def blocked(*args):return [],{},['Company homepage could not be fetched.']
+    async def fetch(*args):
+        return 'html',('<article>Cedar Utilities water services in Florida. Website: <a href="https://cedar.org">Cedar Utilities</a>'
+                       '<div>Maya Chen Billing Director maya.chen@cedar.org</div></article>')
+    monkeypatch.setattr(engine,'_search',search)
+    monkeypatch.setattr('deepsearch.organizations.discover_company_pages',blocked)
+    monkeypatch.setattr('deepsearch.organizations.fetch_public',fetch)
+    result=asyncio.run(OrganizationEngine(engine).run(OrganizationRequest(organization_name='Cedar Utilities',state='FL')))
+    assert result['company_domain']=='cedar.org' and result['status']=='completed'
+    person=next(row for row in result['contacts'] if row['email']=='maya.chen@cedar.org')
+    assert person['name']=='Maya Chen' and person['source_url']=='https://state.gov/directory'
+    assert person['identity_status']=='supported'
+    assert any('fetched public directory' in note for note in result['warnings'])
