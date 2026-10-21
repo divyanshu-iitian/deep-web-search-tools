@@ -9,3 +9,16 @@ server:
   limiter: false
   public_instance: false
   image_proxy: false
+# More independent engines spread the load: Brave, Google and DuckDuckGo throttle a single IP after a few hundred
+# organization searches, which made whole batches look like "nothing found".
+engines:
+  - name: bing
+    disabled: false
+  - name: mojeek
+    disabled: false
+  - name: startpage
+    disabled: false
+  - name: qwant
+    disabled: false
+  - name: yahoo
+    disabled: false
