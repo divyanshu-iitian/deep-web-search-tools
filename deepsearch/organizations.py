@@ -20,7 +20,7 @@ from deepsearch.email_finder import EXCLUDED_HOSTS as BROKER_HOSTS, deobfuscate,
 EMAIL = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.I)
 ROLE = re.compile(r"\b(?:chief(?:\s+(?:executive|financial|information|technology|operating))?\s+officer|(?:vice\s+)?president(?: and CEO)?|CEO|CFO|CIO|general manager|(?:(?:utility|utilities|water|electric|gas|finance|financial|billing|information|technology|IT|operations|engineering|executive|managing|assistant|deputy|public works)\s+){0,3}(?:director|manager)|administrator|superintendent)\b", re.I)
 GENERIC = {"info", "contact", "support", "customerservice", "customer.service", "billing", "office", "admin", "sales", "service", "media", "press", "webmaster", "outage", "emergency", "noreply", "no-reply"}
-NON_PERSON_WORDS={'division','department','services','service','city','county','office','staff','contact','email','utility','utilities','public','support','water','billing','information','director','team','administration','finance','communications','community','planning','works','customer','board','council','member','membership','association','about','development'}
+NON_PERSON_WORDS={'division','department','services','service','city','county','office','staff','contact','email','utility','utilities','public','support','water','billing','information','director','team','administration','finance','communications','community','planning','works','customer','board','council','member','membership','association','about','development','accounting','financial','she','he','his','her','their','our'}
 NAME_PATTERN=r"(?:[A-Z][a-zA-Z'’-]+\.?\s+){1,3}[A-Z][a-zA-Z'’-]+\.?"
 
 def human_name(value):
@@ -297,7 +297,8 @@ LEADER_ROLE=r'(?i:general\s+manager|chief\s+executive\s+officer|ceo|president(?:
 LINE_NAME=r"(?:[A-Z][a-zA-Z'’-]+\.?[ \t]+){1,3}[A-Z][a-zA-Z'’-]+"
 HEADINGS={'leadership','meet','our','contact','contacts','about','staff','board','team','management','executive','the',
           'directors','officers','departments','department','general','welcome','message','from','by','and','with',
-          'skip','content','menu','navigation','home','login','search','main','news','read','more','view','click','page'}
+          'skip','content','menu','navigation','home','login','search','main','news','read','more','view','click','page',
+          'blog','entry','job','open','jobs','events','calendar','privacy','terms'}
 LEADER_AFTER=re.compile(r'(?P<name>'+LINE_NAME+r')[ \t]*(?:,|-|–|—|\||:|\(|\n)[ \t]*(?:the[ \t]+)?(?P<role>'+LEADER_ROLE+r')\b')
 LEADER_BEFORE=re.compile(r'\b(?P<role>'+LEADER_ROLE+r')[ \t]*(?:,|-|–|—|\||:)?[ \t]*(?P<name>'+LINE_NAME+r')\b')
 
@@ -371,6 +372,71 @@ class OrganizationEngine:
         if not providers:return None
         return providers[0] if len(providers)==1 else SearchChain(providers)
 
+    async def public_listing(self,request,budget=25):
+        """A fetched directory can establish a website when its homepage is blocked.
+
+        Require the organization and a single external website in the same small
+        listing. Neither a search snippet nor a directory-wide footer proves it.
+        """
+        provider=self.search_provider()
+        if not provider:return None
+        country='United States' if request.country.upper() in {'US','USA'} else request.country
+        query=f'"{spelled_out(request.organization_name)}" {request.state} {country} directory website email'
+        deadline=time.monotonic()+budget
+        try:
+            hits=await asyncio.wait_for(self.search_engine._search(provider,query,False),min(10,budget))
+        except (httpx.HTTPError,RuntimeError,ValueError,TimeoutError):return None
+        async def read(hit):
+            url=hit.url;source_host=(urlparse(url).hostname or '').lower()
+            if any(source_host==host or source_host.endswith('.'+host) for host in EXCLUDED_HOSTS|BROKER_HOSTS):return None
+            remaining=deadline-time.monotonic()
+            if remaining<2:return None
+            try:
+                kind,body=await asyncio.wait_for(fetch_public(url,self.search_engine.storage),remaining)
+                if kind not in {'html','pdf_text'} or not body:return None
+                parser=ContactHTML()
+                if kind=='html':
+                    parser.feed(body);blocks=parser.blocks
+                else:
+                    blocks=[]
+                    for match in re.finditer(r'(?:https?://|www\.)[^\s<>()]+|(?<=Website: )[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',body):
+                        target=match.group().rstrip('.,;')
+                        if not target.startswith(('http://','https://')):target='https://'+target
+                        blocks.append((body[max(0,match.start()-300):match.end()+250],[target]))
+                for text,links in sorted(blocks,key=lambda block:len(block[0])):
+                    if not organization_matches(request.organization_name,text):continue
+                    if re.search(r'\b(?:website by|powered by|web design|developed by)\b',text,re.I):continue
+                    state=request.state.upper()
+                    geography=(state not in STATES or contains_phrase(text,STATES[state]) or bool(
+                        re.search(r'\b'+re.escape(state)+r'\s+\d{5}\b',text)))
+                    if not geography:continue
+                    websites={}
+                    for href in links:
+                        parsed=urlparse(urljoin(url,href));host=(parsed.hostname or '').lower().removeprefix('www.')
+                        if parsed.scheme not in {'http','https'} or parsed.username or parsed.password or not host:continue
+                        if host==source_host.removeprefix('www.'):continue
+                        if any(host==skip or host.endswith('.'+skip) for skip in EXCLUDED_HOSTS|BROKER_HOSTS):continue
+                        brand=[token for token in re.findall(r'[a-z]+',request.organization_name.lower()) if len(token)>=4
+                               and token not in {'city','county','company','association','council','government','governments','utility','utilities','department','district','annual','conference'}]
+                        branded=any(token in host.split('.')[0] for token in brand)
+                        authoritative=source_host.endswith(('.gov','.us','.org')) and bool(re.search(r'\bwebsite\b',text,re.I))
+                        if not (branded or authoritative):continue
+                        # A US directory entry must not resolve an acronym to a
+                        # foreign country website merely because its letters match.
+                        if request.country.upper() in {'US','USA'} and host.rsplit('.',1)[-1] in {'ng','uk','au','in','ca','za','nz'}:continue
+                        websites[host]='https://'+host
+                    if len(websites)!=1:continue
+                    domain,website=next(iter(websites.items()))
+                    from deepsearch.company_discovery import page_text
+                    return {'website':website,'domain':domain,'url':url,'text':page_text(body) if kind=='html' else body,'html':body if kind=='html' else '',
+                            'excerpt':text,'geography':'supported'}
+            except (httpx.HTTPError,OSError,ValueError,TimeoutError):return None
+            return None
+        results=await asyncio.gather(*(read(hit) for hit in hits[:6]))
+        supported=[result for result in results if result]
+        if len({result['domain'] for result in supported})!=1:return None
+        return supported[0]
+
     async def find_named_contact(self,request,domain):
         """Look for the supplied person's *published* address. Never constructs one.
 
@@ -434,17 +500,86 @@ class OrganizationEngine:
             notes.append(f'No publicly listed email was found for {request.contact_name}; no address was guessed.')
         return rows,notes
 
+    async def find_public_contacts(self,request,domain,budget=45):
+        """Company-wide email search across public directories, filings and PDFs.
+
+        Search snippets only discover URLs. A fetched page must publish a named
+        person next to an organization-domain address; personal addresses and
+        brokers are excluded. This works even when the site lists no leaders.
+        """
+        provider=self.search_provider()
+        if not provider:return [],['Public contact search has no available provider.']
+        deadline=time.monotonic()+budget
+        urls=[];notes=[];rows=[]
+        expanded=spelled_out(request.organization_name)
+        queries=[f'site:{domain} "@{domain}" staff',
+                 f'"@{domain}" "{expanded}" directory filetype:pdf',
+                 f'"{expanded}" billing finance general manager email']
+        for index,query in enumerate(queries):
+            remaining=deadline-time.monotonic()
+            if remaining<8:break
+            try:
+                hits=await asyncio.wait_for(self.search_engine._search(provider,query,False),min(18,remaining))
+                urls.extend(hit.url for hit in hits if not any(
+                    (urlparse(hit.url).hostname or '')==host or (urlparse(hit.url).hostname or '').endswith('.'+host) for host in BROKER_HOSTS))
+            except (httpx.HTTPError,RuntimeError,ValueError,TimeoutError):
+                notes.append('A public contact search provider was unavailable; other sources continued.')
+            if index>=1 and len(set(urls))>=6:break
+        from deepsearch.company_discovery import page_text
+        allowed=[url for url in dict.fromkeys(urls) if not any(
+            (urlparse(url).hostname or '')==host or (urlparse(url).hostname or '').endswith('.'+host) for host in BROKER_HOSTS)]
+        def rank(url):
+            path=urlparse(url).path.lower()
+            return -sum(hint in path for hint in ('staff','contact','directory','personnel','leadership','team','email'))
+        official=sorted((url for url in allowed if is_company_url(url,domain)),key=rank)
+        external=sorted((url for url in allowed if not is_company_url(url,domain)),key=rank)
+        # Both pools get a budget. A group of unrelated PDFs must not push the
+        # organization's own staff directory out of the fetched URL selection.
+        selected=list(dict.fromkeys(official[:4]+external[:4]+official[4:]+external[4:]))[:8]
+        # Concurrent across independent hosts; fetch_public enforces shared host
+        # pacing, robots, public IPs, byte caps and Retry-After cooldowns.
+        async def read(url):
+            remaining=deadline-time.monotonic()
+            if remaining<2:return []
+            try:
+                cached=self.search_engine.storage.cached_value(f'site-html-v1:{url}') if is_company_url(url,domain) else None
+                if cached:
+                    kind,body='html',cached
+                else:
+                    kind,body=await asyncio.wait_for(fetch_public(url,self.search_engine.storage),min(28,remaining))
+                if kind not in {'html','pdf_text'} or not body:return []
+                text=page_text(body) if kind=='html' else body
+                found=[]
+                for row in extract_contacts(body if kind=='html' else '',text,url,request.contact_name):
+                    host=row['email'].rsplit('@',1)[-1]
+                    if not (host==domain or host.endswith('.'+domain)):continue
+                    if not (row.get('name') and row.get('kind')=='person' and row.get('relevance_score',0)>=50):continue
+                    if request.contact_name and not same_person(row['name'],request.contact_name):continue
+                    if not is_company_url(url,domain) and not local_matches_name(row['email'],row['name']):continue
+                    row['identity_status']='supported'
+                    row['email_evidence']='public_company_directory' if is_company_url(url,domain) else 'listed_on_public_third_party_page'
+                    row['background']=f'Public professional listing on {urlparse(url).hostname}: '+row.get('background','')[:850]
+                    found.append(row)
+                return found
+            except (httpx.HTTPError,OSError,ValueError,TimeoutError):return []
+        for group in await asyncio.gather(*(read(url) for url in selected)):rows.extend(group)
+        if not rows:notes.append('No usable named address was established in the additional public pages searched.')
+        return rows,list(dict.fromkeys(notes))
+
     async def run(self, request: OrganizationRequest):
         started=time.monotonic();warnings=[];candidates=[]
         if request.website:candidates=[request.website]
         else:
             provider=self.search_provider()
             if provider:
-                # Exact name first; lists often abbreviate or misspell it, so a plain spelled-out query follows.
-                for query in (f'"{request.organization_name}" {request.state} {request.county} official website',
-                              f'{spelled_out(request.organization_name)} {request.state} official website'):
+                country='United States' if request.country.upper() in {'US','USA'} else request.country
+                sector='utility association' if request.record_type.lower()=='association' else ''
+                # Expanded names come first: quoted abbreviations can return many
+                # unrelated directories without the actual organization website.
+                for query in dict.fromkeys((f'{spelled_out(request.organization_name)} {request.state} {request.county} {country} {sector} official website',
+                                             f'"{request.organization_name}" {request.state} {country} {sector} official website')):
                     try:
-                        hits=await self.search_engine._search(provider,query,False)
+                        hits=await self.search_engine._search(provider,' '.join(query.split()),False)
                         candidates+=[x.url for x in hits]
                     except (httpx.HTTPError,RuntimeError,ValueError):pass
                     if len(candidates)>=3:break
@@ -455,12 +590,23 @@ class OrganizationEngine:
                 except (httpx.HTTPError,ValueError):warnings.append('Free public entity registry unavailable.')
             if not provider:warnings.append('No broad search provider configured; free entity registry was used. Long-tail organizations may need SearXNG or a supplied website.')
         website='';pages={};domain='';evidence=[];geography='unknown'
-        for candidate in list(dict.fromkeys(candidates))[:5]:
+        checked_hosts=set()
+        for candidate in list(dict.fromkeys(candidates)):
             parsed=urlparse(candidate if '://' in candidate else 'https://'+candidate)
             if parsed.scheme=='http':parsed=parsed._replace(scheme='https')
             host=(parsed.hostname or '').lower().removeprefix('www.')
-            if parsed.scheme!='https' or not host or parsed.username or parsed.password or parsed.port not in {None,443} or any(host==x or host.endswith('.'+x) for x in EXCLUDED_HOSTS):continue
-            hits,bodies,notes=await discover_company_pages('',host,self.search_engine.storage,request.max_pages)
+            if parsed.scheme!='https' or not host or parsed.username or parsed.password or parsed.port not in {None,443} or any(host==x or host.endswith('.'+x) for x in EXCLUDED_HOSTS|BROKER_HOSTS):continue
+            if host in checked_hosts:continue
+            if len(checked_hosts)>=5:break
+            checked_hosts.add(host)
+            # A blocked or unrelated site must leave time to check other candidates
+            # and search public directories, rather than consume the entire request.
+            remaining=90-(time.monotonic()-started)
+            if remaining<5:break
+            try:
+                hits,bodies,notes=await asyncio.wait_for(discover_company_pages('',host,self.search_engine.storage,request.max_pages),min(40,remaining))
+            except TimeoutError:
+                warnings.append(f'Candidate {host} exceeded its crawl budget; other candidates continued.');continue
             if not bodies: warnings.extend(notes);continue
             combined=' '.join(bodies.values())
             if not organization_matches(request.organization_name,combined):
@@ -476,10 +622,20 @@ class OrganizationEngine:
             geography='supported' if matched_state else 'unknown'
             evidence=[{'url':url,'excerpt':body[:1000]} for url,body in pages.items()]
             if matched_state:break
+        public_html={}
+        if not domain:
+            remaining=120-(time.monotonic()-started)
+            if remaining>=8:
+                listing=await self.public_listing(request,min(30,remaining))
+                if listing:
+                    website=listing['website'];domain=listing['domain'];geography=listing['geography']
+                    pages={listing['url']:listing['text']};public_html={listing['url']:listing['html']}
+                    evidence=[{'url':listing['url'],'excerpt':listing['excerpt']}]
+                    warnings.append('Company homepage was unavailable; organization-domain affiliation is supported by a fetched public directory listing.')
         contacts=[]
         storage=self.search_engine.storage
         for url,text in pages.items():
-            html=storage.cached_value(f'site-html-v1:{url}') or ''
+            html=public_html.get(url) or storage.cached_value(f'site-html-v1:{url}') or ''
             contacts.extend(extract_contacts(html,text,url,request.contact_name))
         if domain:
             # Staff directories, org charts, board packets and annual reports are often PDFs only.
@@ -499,8 +655,8 @@ class OrganizationEngine:
             # a supplied name is looked up. Only an address published next to that person's name is kept.
             for leader in leaders(pages)[:2]:
                 # The whole organization must finish inside the API's 150-second bound: what was found so far is kept.
-                budget=135-(time.monotonic()-started)
-                if budget<20:
+                budget=min(30,90-(time.monotonic()-started))
+                if budget<10:
                     warnings.append('Leader lookup skipped: the organization search used its time budget.');break
                 try:
                     found,notes=await asyncio.wait_for(self.find_named_contact(
@@ -514,6 +670,16 @@ class OrganizationEngine:
                     row['background']=f"Named on {urlparse(leader['source_url']).hostname} as {leader['title']}. "+row.get('background','')
                 contacts.extend(found);warnings.extend(notes)
                 if named:break
+        supported=[row for row in contacts if row.get('name') and row.get('kind')=='person'
+                   and row.get('identity_status')=='supported' and row.get('relevance_score',0)>=50
+                   and (row['email'].rsplit('@',1)[-1]==domain or row['email'].rsplit('@',1)[-1].endswith('.'+domain))
+                   and (not request.contact_name or same_person(row['name'],request.contact_name))]
+        if domain and not supported:
+            remaining=135-(time.monotonic()-started)
+            if remaining>=10:
+                found,notes=await self.find_public_contacts(request,domain,min(55,remaining))
+                contacts.extend(found);warnings.extend(notes)
+                for row in found:evidence.append({'url':row['source_url'],'excerpt':row.get('background','')[:1000]})
         sources={}
         for row in contacts:sources.setdefault(row['email'],set()).add(row['source_url'])
         unique={}
@@ -528,6 +694,8 @@ class OrganizationEngine:
                 row['identity_status']='review';row['relevance_score']=min(row['relevance_score'],40)
         text=' '.join(pages.values())
         facts=classify_organization(request,text,pages)
+        if public_html:
+            facts['in_scope']['quote']=facts['in_scope']['quote'].replace('Official pages','Public directory pages').replace('Official website','Public directory')
         if website and geography=='unknown':
             warnings.append('Organization name matched, but supplied state was not supported by page text; review geographic identity.')
             facts['in_scope']={'value':'Review','source_url':'','quote':'Geographic identity needs confirmation before assessing fit.'}

@@ -4,6 +4,16 @@ Evidence-first **public professional identity search** for validating a supplied
 
 ## What works
 
+- Company-only imports search for an official website, then public staff directories and
+  HTML/PDF listings without needing a known leader name. Expanded abbreviations and country
+  context improve website candidates. If the homepage is blocked, a fetched directory can
+  establish the domain only when one local listing supports the organization, state and a
+  single website. Conflicting listings stay unresolved. Search snippets never supply emails.
+- Official staff pages and external listings have separate fetch budgets. An already fetched
+  company page is reused; a later slow sitemap does not discard its homepage evidence.
+  The organization API retains its 150-second request bound. No paid search key is required
+  with self-hosted SearXNG; missing public data and upstream limits still affect coverage.
+
 - Supplied public profile text is retained when company discovery adds or finds no other pages, with a six-hour supplied-page cache.
 - A directory email must appear near the named person before it is labeled an exact public work-email match.
 - The outbound engine consumes professional source excerpts rather than inventing interests from search snippets.
